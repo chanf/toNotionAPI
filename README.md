@@ -296,3 +296,28 @@ npm run deploy
    ```bash
    npm run deploy
    ```
+
+## GitHub Actions 自动发布 Worker
+
+仓库已提供工作流：`.github/workflows/deploy-worker.yml`
+
+触发条件：
+
+- push 到 `main`
+- 或手动触发 `workflow_dispatch`
+
+发布流程：
+
+1. `npm ci`
+2. `npm run typecheck`
+3. `npm test`
+4. `npm run deploy -- --name tonotionapi --keep-vars`
+
+请在 GitHub 仓库中配置以下 Actions Secrets（否则自动发布会失败）：
+
+- `CLOUDFLARE_API_TOKEN`
+- `CLOUDFLARE_ACCOUNT_ID`
+
+说明：
+
+- `--keep-vars` 用于保留 Cloudflare Dashboard 中已配置的运行时变量，避免每次发布被清空。
