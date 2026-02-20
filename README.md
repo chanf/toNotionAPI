@@ -255,3 +255,44 @@ npm run deploy
 1. 健康检查：`GET /healthz`
 2. 使用管理员 token 调用 `POST /v1/admin/tokens` 创建业务 token
 3. 使用业务 token 调用 `POST /v1/ingest` 验证入库与异步状态流转
+
+## FAQ（部署排障）
+
+### Q1：`https://tonotion.iiioiii.xin/docs` 无法访问（404），但 `workers.dev` 可以访问，为什么？
+
+常见原因：
+
+- 自定义域仍被 Cloudflare Pages 项目占用（即使 DNS 已改，Pages 的 Custom Domain 绑定还在）。
+- Worker 虽已部署成功，但请求并没有命中 Worker，而是落到 Pages/默认 404。
+
+解决方案：
+
+1. 在 `Pages -> tonotionapi -> Custom domains` 中移除 `tonotion.iiioiii.xin`。
+2. 在 `DNS` 中删除旧的 `tonotion` 记录（如 A/CNAME）。
+3. 在 `Workers & Pages -> tonotionapi (Worker) -> Domains` 重新添加 `tonotion.iiioiii.xin`。
+4. 等待 1-5 分钟后重新验证：
+   - `https://tonotion.iiioiii.xin/healthz`
+   - `https://tonotion.iiioiii.xin/docs`
+   - `https://tonotion.iiioiii.xin/openapi.yaml`
+
+### Q2：部署时报错 `10021`（`binding DB of type d1 must have a database that already exists`）怎么办？
+
+原因：
+
+- `wrangler.toml` 中的 D1 `database_id` 还是占位值，或当前账号下没有对应 D1 数据库。
+
+解决方案：
+
+1. 创建 D1：
+   ```bash
+   npx wrangler d1 create wx2notion-db
+   ```
+2. 将返回的 `database_id`（和 `preview_database_id`）写入 `wrangler.toml`。
+3. 执行迁移：
+   ```bash
+   npm run d1:migrate:remote
+   ```
+4. 重新部署：
+   ```bash
+   npm run deploy
+   ```
