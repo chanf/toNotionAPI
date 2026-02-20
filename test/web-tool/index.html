@@ -1,0 +1,216 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Notion 推送测试工具</title>
+    <style>
+      :root {
+        --bg: #f7f4ec;
+        --panel: #fffdf8;
+        --text: #1e1a14;
+        --muted: #6a5d4a;
+        --line: #d7ccbd;
+        --accent: #8b5e3c;
+        --ok: #226d42;
+        --error: #a02020;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        font-family: "SFMono-Regular", "Menlo", "Consolas", monospace;
+        background: radial-gradient(circle at top left, #fffaf1 0%, var(--bg) 55%);
+        color: var(--text);
+      }
+      .wrap {
+        max-width: 920px;
+        margin: 32px auto;
+        padding: 24px;
+      }
+      .panel {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        padding: 20px;
+      }
+      h1 {
+        margin: 0 0 8px 0;
+        font-size: 24px;
+      }
+      .muted {
+        margin: 0 0 16px 0;
+        color: var(--muted);
+      }
+      form {
+        display: grid;
+        gap: 12px;
+      }
+      label {
+        font-weight: 600;
+      }
+      input {
+        width: 100%;
+        padding: 12px;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        background: #fff;
+        color: var(--text);
+        font-size: 14px;
+      }
+      button {
+        width: 180px;
+        padding: 10px 14px;
+        border-radius: 999px;
+        border: 0;
+        background: var(--accent);
+        color: #fff;
+        font-weight: 700;
+        cursor: pointer;
+      }
+      button:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+      .row {
+        margin-top: 16px;
+      }
+      .status {
+        padding: 10px 12px;
+        border-radius: 8px;
+        border: 1px solid var(--line);
+        background: #fff;
+        font-size: 14px;
+      }
+      .status.ok {
+        color: var(--ok);
+      }
+      .status.error {
+        color: var(--error);
+      }
+      pre {
+        margin: 0;
+        max-height: 320px;
+        overflow: auto;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        background: #fff;
+        padding: 12px;
+        font-size: 12px;
+        line-height: 1.5;
+      }
+      a {
+        color: var(--accent);
+      }
+    </style>
+  </head>
+  <body>
+    <main class="wrap">
+      <section class="panel">
+        <h1>Notion 推送测试工具</h1>
+        <p class="muted" id="configText">正在加载配置...</p>
+
+        <form id="submitForm">
+          <label for="sourceUrl">微信公众号文章 URL</label>
+          <input
+            id="sourceUrl"
+            type="url"
+            required
+            placeholder="https://mp.weixin.qq.com/s/..."
+            value="https://mp.weixin.qq.com/s/BR7smBzxDaLcH8j8M6oJ9A"
+          />
+          <button id="submitBtn" type="submit">提交到 Notion</button>
+        </form>
+
+        <div class="row">
+          <div class="status" id="statusText">等待提交...</div>
+        </div>
+
+        <div class="row">
+          <strong>结果</strong>
+          <pre id="resultText">暂无结果</pre>
+        </div>
+      </section>
+    </main>
+
+    <script>
+      const form = document.getElementById("submitForm");
+      const sourceUrlInput = document.getElementById("sourceUrl");
+      const submitBtn = document.getElementById("submitBtn");
+      const statusText = document.getElementById("statusText");
+      const resultText = document.getElementById("resultText");
+      const configText = document.getElementById("configText");
+
+      function setStatus(text, type) {
+        statusText.textContent = text;
+        statusText.className = "status";
+        if (type === "ok") statusText.classList.add("ok");
+        if (type === "error") statusText.classList.add("error");
+      }
+
+      function renderResult(data) {
+        resultText.textContent = JSON.stringify(data, null, 2);
+        const notionUrl = data?.final?.item?.notion_page_url;
+        if (typeof notionUrl === "string" && notionUrl) {
+          const safe = notionUrl.replace(/"/g, "&quot;");
+          statusText.innerHTML = `已完成同步：<a href="${safe}" target="_blank" rel="noreferrer">${safe}</a>`;
+          statusText.className = "status ok";
+        }
+      }
+
+      async function loadConfig() {
+        try {
+          const response = await fetch("/api/config", { method: "GET" });
+          const payload = await response.json();
+          configText.textContent =
+            `目标服务：${payload.base_url} | Token 已配置：${payload.has_token ? "是" : "否"} | 轮询：${payload.poll_interval_ms}ms / 超时：${payload.poll_timeout_ms}ms`;
+          if (!payload.has_token) {
+            setStatus("服务端未配置 WEB_TOOL_API_TOKEN，无法提交。", "error");
+          }
+        } catch (error) {
+          setStatus(`读取配置失败：${error instanceof Error ? error.message : String(error)}`, "error");
+        }
+      }
+
+      form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+
+        const sourceUrl = sourceUrlInput.value.trim();
+        if (!sourceUrl) {
+          setStatus("请先输入公众号 URL。", "error");
+          return;
+        }
+
+        submitBtn.disabled = true;
+        setStatus("已提交，正在等待同步结果...", "");
+        resultText.textContent = "处理中...";
+
+        try {
+          const response = await fetch("/api/submit", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ source_url: sourceUrl })
+          });
+          const payload = await response.json();
+          renderResult(payload);
+
+          if (!response.ok) {
+            setStatus(`请求失败（HTTP ${response.status}）`, "error");
+          } else if (payload.ok) {
+            setStatus("同步成功。", "ok");
+          } else {
+            const itemStatus = payload?.final?.item?.status ?? "unknown";
+            setStatus(`同步未成功，最终状态：${itemStatus}`, "error");
+          }
+        } catch (error) {
+          setStatus(`请求异常：${error instanceof Error ? error.message : String(error)}`, "error");
+        } finally {
+          submitBtn.disabled = false;
+        }
+      });
+
+      loadConfig();
+    </script>
+  </body>
+</html>

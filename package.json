@@ -9,6 +9,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:web-tool": "node test/web-tool/server.mjs",
     "d1:migrate:local": "wrangler d1 migrations apply wx2notion-db --local",
     "d1:migrate:remote": "wrangler d1 migrations apply wx2notion-db --remote",
     "token:hash": "node scripts/hash-token.mjs",

@@ -4,9 +4,9 @@
 
 ## 独立仓库说明
 
-`backend/` 目录已按独立项目组织，可直接拆分为单独仓库开发。
+当前目录就是后端独立仓库根目录（不是单仓中的 `backend/` 子目录）。
 
-若当前目录已经是独立代码目录，初始化仓库：
+如需重新初始化仓库可执行：
 
 ```bash
 git init
@@ -19,7 +19,8 @@ git status
 ```text
 .
 ├── src/                 # 业务代码
-├── test/                # 单元测试
+├── test/                # 单元测试 + Web 手工测试工具
+│   └── web-tool/        # 本地网页提交工具（输入 URL -> 提交到 Notion）
 ├── migrations/          # D1 migrations
 ├── scripts/             # 工具脚本（如 token hash）
 ├── docs/                # 后端文档（API/Schema/设计）
@@ -116,8 +117,10 @@ VALUES
 
 MVP 现支持两种模式：
 
-- `NOTION_MOCK=true`：模拟 Notion 同步（本地默认，便于开发测试）。
+- `NOTION_MOCK=true`：模拟 Notion 同步（便于本地调试，不会写入真实 Notion）。
 - `NOTION_MOCK=false`：真实调用 Notion API 创建页面。
+
+当前仓库 `wrangler.toml` 示例配置为 `NOTION_MOCK="false"`（即真实写入模式）。
 
 需要的环境变量：
 
@@ -131,7 +134,9 @@ MVP 现支持两种模式：
 
 ```bash
 npx wrangler secret put NOTION_API_TOKEN
-# wrangler.toml 或 Dashboard 中设置 NOTION_MOCK="false"
+# 根据调试目标在 wrangler.toml 或 Dashboard 中设置 NOTION_MOCK:
+# - true: 仅模拟，不写入 Notion
+# - false: 真实写入 Notion
 npm run dev
 ```
 
@@ -224,6 +229,39 @@ npm test
 ```
 
 注：测试默认注入 InMemoryStore，避免依赖真实 D1 资源。
+
+### Web 手工测试工具（test 目录）
+
+如果你想在浏览器里手工输入公众号 URL 并直接触发同步，可使用：
+
+```bash
+WEB_TOOL_API_TOKEN="<API_TOKEN>" \
+WEB_TOOL_API_BASE_URL="https://tonotion.iiioiii.xin" \
+npm run test:web-tool
+```
+
+然后打开：
+
+```bash
+http://127.0.0.1:4173
+```
+
+说明：
+
+- 该工具在 `test/web-tool` 下，是独立的本地页面与本地代理服务。
+- 页面只需要输入公众号 URL，点击提交后会调用 `/v1/ingest` 并轮询到最终状态。
+- 默认端口为 `4173`，可通过 `WEB_TOOL_PORT` 覆盖。
+- 若未设置 `WEB_TOOL_API_BASE_URL`，默认使用 `https://tonotion.iiioiii.xin`。
+
+### CLI 线上链路测试（可选）
+
+如果你想直接在终端验证线上链路，可使用：
+
+```bash
+API_TOKEN="<API_TOKEN>" \
+API_BASE_URL="https://tonotion.iiioiii.xin" \
+npm run ingest:online -- --source-url "https://mp.weixin.qq.com/s/BR7smBzxDaLcH8j8M6oJ9A"
+```
 
 ## Cloudflare 部署（Workers + D1）
 
@@ -344,7 +382,7 @@ npx wrangler tail tonotionapi
 
 ## 部署策略
 
-当前仓库不再使用 GitHub Actions 自动发布 Worker。
+当前仓库默认不依赖 GitHub Actions 发布 Worker（以 Cloudflare 平台侧部署为主）。
 
 统一采用 Cloudflare Worker 原生部署方式：
 
