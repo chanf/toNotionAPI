@@ -1,21 +1,13 @@
 import { createLogger, serializeError, type Logger } from "./logger";
+import { buildNotionChildrenBlocks } from "./notion-blocks";
 import type { Store } from "./store";
+import { ParserError, parseWeChatArticle, type ParsedArticle } from "./article-parser";
 import { nowIso, randomId } from "./utils";
 
 const DEFAULT_NOTION_API_BASE_URL = "https://api.notion.com/v1";
 const DEFAULT_NOTION_API_VERSION = "2022-06-28";
 const NOTION_TITLE_MAX_LENGTH = 200;
-const NOTION_RICH_TEXT_MAX_LENGTH = 1900;
-
-class ParserError extends Error {
-  constructor(
-    readonly code: string,
-    message: string,
-    readonly retriable: boolean
-  ) {
-    super(message);
-  }
-}
+const NOTION_MAX_CHILDREN_PER_REQUEST = 100;
 
 class NotionSyncError extends Error {
   constructor(
@@ -26,13 +18,6 @@ class NotionSyncError extends Error {
     super(message);
   }
 }
-
-type ParsedArticle = {
-  title: string;
-  summary: string;
-  coverUrl: string | null;
-  contentPlaintext: string;
-};
 
 export type NotionRuntimeInput = {
   mock?: boolean;
@@ -71,125 +56,31 @@ function normalizeNotionRuntime(input: NotionRuntimeInput | undefined): Resolved
   };
 }
 
-function parseTitleFromUrl(url: URL): string | null {
-  return url.searchParams.get("title");
-}
-
-async function parseWeChatArticle(url: string, rawText: string | null): Promise<ParsedArticle> {
-  await sleep(80);
-  if (url.includes("fail-parse")) {
-    throw new ParserError(
-      "PARSE_FETCH_FAILED",
-      "Failed to fetch article content from source URL.",
-      true
-    );
-  }
-  const parsed = new URL(url);
-  const title = parseTitleFromUrl(parsed) ?? `WeChat Article - ${parsed.hostname}`;
-  const content = rawText ?? `Captured URL: ${url}`;
-  return {
-    title,
-    summary: content.slice(0, 120),
-    coverUrl: null,
-    contentPlaintext: content
-  };
-}
-
-function buildNotionChildrenBlocks(input: {
-  normalizedUrl: string;
-  summary: string;
-  contentPlaintext: string;
-}): Array<Record<string, unknown>> {
-  const blocks: Array<Record<string, unknown>> = [];
-  const sourceUrl = truncateText(input.normalizedUrl, NOTION_RICH_TEXT_MAX_LENGTH);
-  blocks.push({
-    object: "block",
-    type: "paragraph",
-    paragraph: {
-      rich_text: [
-        {
-          type: "text",
-          text: {
-            content: "Source: "
-          }
-        },
-        {
-          type: "text",
-          text: {
-            content: sourceUrl,
-            link: { url: input.normalizedUrl }
-          }
-        }
-      ]
-    }
-  });
-
-  const summary = input.summary.trim();
-  if (summary.length > 0) {
-    blocks.push({
-      object: "block",
-      type: "paragraph",
-      paragraph: {
-        rich_text: [
-          {
-            type: "text",
-            text: {
-              content: truncateText(summary, NOTION_RICH_TEXT_MAX_LENGTH)
-            }
-          }
-        ]
-      }
-    });
-  }
-
-  const content = input.contentPlaintext.trim();
-  if (content.length > 0 && content !== summary) {
-    blocks.push({
-      object: "block",
-      type: "paragraph",
-      paragraph: {
-        rich_text: [
-          {
-            type: "text",
-            text: {
-              content: truncateText(content, NOTION_RICH_TEXT_MAX_LENGTH)
-            }
-          }
-        ]
-      }
-    });
-  }
-
-  return blocks;
-}
-
 function buildNotionPagePayload(input: {
   databaseId: string;
-  normalizedUrl: string;
-  article: ParsedArticle;
+  titlePropertyName: string;
+  title: string;
+  children: Array<Record<string, unknown>>;
 }): Record<string, unknown> {
-  const title = truncateText(input.article.title || "WeChat Article", NOTION_TITLE_MAX_LENGTH);
+  const title = truncateText(input.title || "WeChat Article", NOTION_TITLE_MAX_LENGTH);
+  const properties: Record<string, unknown> = {};
+  properties[input.titlePropertyName] = {
+    title: [
+      {
+        type: "text",
+        text: {
+          content: title
+        }
+      }
+    ]
+  };
+
   return {
     parent: {
       database_id: input.databaseId
     },
-    properties: {
-      title: {
-        title: [
-          {
-            type: "text",
-            text: {
-              content: title
-            }
-          }
-        ]
-      }
-    },
-    children: buildNotionChildrenBlocks({
-      normalizedUrl: input.normalizedUrl,
-      summary: input.article.summary,
-      contentPlaintext: input.article.contentPlaintext
-    })
+    properties,
+    children: input.children
   };
 }
 
@@ -247,6 +138,91 @@ function mapNotionHttpError(status: number, detail: string | null): NotionSyncEr
   );
 }
 
+function notionHeaders(runtime: ResolvedNotionRuntime): Record<string, string> {
+  return {
+    authorization: `Bearer ${runtime.apiToken ?? ""}`,
+    "content-type": "application/json",
+    "notion-version": runtime.apiVersion
+  };
+}
+
+function chunkArray<T>(input: T[], size: number): T[][] {
+  const chunks: T[][] = [];
+  let cursor = 0;
+  while (cursor < input.length) {
+    chunks.push(input.slice(cursor, cursor + size));
+    cursor += size;
+  }
+  return chunks;
+}
+
+async function resolveNotionTitlePropertyName(
+  databaseId: string,
+  runtime: ResolvedNotionRuntime
+): Promise<string> {
+  const response = await fetch(`${runtime.apiBaseUrl}/databases/${databaseId}`, {
+    method: "GET",
+    headers: notionHeaders(runtime)
+  });
+  if (!response.ok) {
+    const detail = await parseNotionErrorMessage(response);
+    throw mapNotionHttpError(response.status, detail);
+  }
+
+  const payload = (await response.json()) as Record<string, unknown>;
+  const properties =
+    payload && typeof payload.properties === "object" && payload.properties
+      ? (payload.properties as Record<string, unknown>)
+      : null;
+  if (!properties) {
+    throw new NotionSyncError(
+      "NOTION_SCHEMA_INVALID",
+      "Notion database schema is invalid or missing properties.",
+      false
+    );
+  }
+
+  for (const [name, definition] of Object.entries(properties)) {
+    if (definition && typeof definition === "object") {
+      const propertyType = (definition as Record<string, unknown>).type;
+      if (propertyType === "title") {
+        return name;
+      }
+    }
+  }
+
+  throw new NotionSyncError(
+    "NOTION_SCHEMA_INVALID",
+    "Notion database has no title property.",
+    false
+  );
+}
+
+async function appendNotionChildren(input: {
+  pageId: string;
+  children: Array<Record<string, unknown>>;
+  runtime: ResolvedNotionRuntime;
+}): Promise<void> {
+  if (input.children.length === 0) {
+    return;
+  }
+
+  const chunks = chunkArray(input.children, NOTION_MAX_CHILDREN_PER_REQUEST);
+  for (const chunk of chunks) {
+    const response = await fetch(`${input.runtime.apiBaseUrl}/blocks/${input.pageId}/children`, {
+      method: "POST",
+      headers: notionHeaders(input.runtime),
+      body: JSON.stringify({
+        children: chunk
+      })
+    });
+    if (!response.ok) {
+      const detail = await parseNotionErrorMessage(response);
+      throw mapNotionHttpError(response.status, detail);
+    }
+  }
+}
+
 async function syncToNotion(input: {
   normalizedUrl: string;
   settings: { notion_connected: boolean; target_database_id: string | null };
@@ -292,18 +268,26 @@ async function syncToNotion(input: {
     );
   }
 
+  const titlePropertyName = await resolveNotionTitlePropertyName(
+    input.settings.target_database_id,
+    runtime
+  );
+  const children = buildNotionChildrenBlocks({
+    normalizedUrl: input.normalizedUrl,
+    article: input.article
+  });
+  const firstBatch = children.slice(0, NOTION_MAX_CHILDREN_PER_REQUEST);
+  const remain = children.slice(NOTION_MAX_CHILDREN_PER_REQUEST);
+
   const response = await fetch(`${runtime.apiBaseUrl}/pages`, {
     method: "POST",
-    headers: {
-      authorization: `Bearer ${runtime.apiToken}`,
-      "content-type": "application/json",
-      "notion-version": runtime.apiVersion
-    },
+    headers: notionHeaders(runtime),
     body: JSON.stringify(
       buildNotionPagePayload({
         databaseId: input.settings.target_database_id,
-        normalizedUrl: input.normalizedUrl,
-        article: input.article
+        titlePropertyName,
+        title: input.article.title,
+        children: firstBatch
       })
     )
   });
@@ -322,6 +306,14 @@ async function syncToNotion(input: {
       "Notion response missing page id or url.",
       true
     );
+  }
+
+  if (remain.length > 0) {
+    await appendNotionChildren({
+      pageId,
+      children: remain,
+      runtime
+    });
   }
 
   return {

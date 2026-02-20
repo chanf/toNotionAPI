@@ -53,7 +53,8 @@ git status
 说明：
 - 当前主线已接入 D1 持久化（通过 `DB` 绑定）。
 - 异步任务仍使用 `waitUntil`，后续建议接入 Queues。
-- 已支持真实 Notion 写入（`POST /v1/pages`），默认本地使用 mock 模式。
+- 已支持真实 Notion 写入（创建 page + 追加 blocks），默认本地使用 mock 模式。
+- 公众号 URL 处理链路：抓取文章 HTML -> 提取正文 -> 转 Markdown -> 转 Notion Blocks -> 写入 Notion。
 
 ## 在线 API 文档
 
@@ -138,6 +139,20 @@ npm run dev
 
 - `/v1/auth/notion/callback` 目前仍是 MVP 简化实现（仅标记 `notion_connected=true`），不含完整 OAuth token 交换/刷新。
 - 真实写入依赖 `NOTION_API_TOKEN` 有目标数据库写入权限，并且数据库已共享给该 integration。
+- `target_database_id` 必须是 **Notion 数据库 ID**（不是 Cloudflare D1 `database_id`）。
+
+### 公众号正文解析与格式转换（当前实现）
+
+1. Worker 获取 `mp.weixin.qq.com` 页面 HTML。
+2. 从 `id="js_content"` 提取正文区域。
+3. 将正文 HTML 转为 Markdown（支持段落、标题、列表、引用、代码块、图片）。
+4. 将 Markdown 转成 Notion Blocks 并写入页面。
+
+说明：
+
+- 若请求里提供 `raw_text` 且它不是 URL，会作为本地兜底正文（便于离线测试）。
+- Notion 单次 append children 有 100 条限制，服务端会自动分批追加。
+- Notion `rich_text.text.content` 有长度限制，服务端会自动分段截断，避免超限报错。
 
 常见同步错误码：
 
