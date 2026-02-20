@@ -1,0 +1,187 @@
+# wx2notion-backend
+
+独立后端项目：Node.js (TypeScript) + Cloudflare Workers + D1。
+
+## 独立仓库说明
+
+`backend/` 目录已按独立项目组织，可直接拆分为单独仓库开发。
+
+若当前目录已经是独立代码目录，初始化仓库：
+
+```bash
+git init
+git add .
+git status
+```
+
+## 项目结构
+
+```text
+.
+├── src/                 # 业务代码
+├── test/                # 单元测试
+├── migrations/          # D1 migrations
+├── scripts/             # 工具脚本（如 token hash）
+├── docs/                # 后端文档（API/Schema/设计）
+├── wrangler.toml
+├── package.json
+└── README.md
+```
+
+## 文档入口
+
+- `docs/openapi.yaml`：后端 API 草案
+- `docs/db_schema.sql`：D1 表结构草案
+- `docs/product-tech-design.md`：MVP 产品/技术设计（含上下文）
+
+## 功能范围（当前）
+
+- `GET /healthz`
+- `POST /v1/ingest`
+- `GET /v1/items`
+- `GET /v1/items/{itemId}`
+- `POST /v1/items/{itemId}/retry`
+- `GET /v1/auth/notion/start`
+- `GET /v1/auth/notion/callback`
+- `PUT /v1/settings/notion-target`
+- `POST /v1/admin/tokens`（管理员：创建 token）
+- `GET /v1/admin/tokens`（管理员：查询 token）
+- `POST /v1/admin/tokens/{tokenId}/revoke`（管理员：吊销 token）
+
+说明：
+- 当前主线已接入 D1 持久化（通过 `DB` 绑定）。
+- 异步任务仍使用 `waitUntil`，后续建议接入 Queues。
+- 已支持真实 Notion 写入（`POST /v1/pages`），默认本地使用 mock 模式。
+
+## D1 初始化
+
+1. 创建 D1 数据库（首次）：
+```bash
+npx wrangler d1 create wx2notion-db
+```
+
+2. 把返回的 `database_id` 填入 `wrangler.toml` 的 `[[d1_databases]]`：
+- `database_id`
+- `preview_database_id`
+
+3. 应用本地 migration：
+```bash
+npm run d1:migrate:local
+```
+
+4. 应用远端 migration：
+```bash
+npm run d1:migrate:remote
+```
+
+## API 访问 Token 初始化
+
+后端会校验 `Authorization: Bearer <token>`，并在 D1 表 `api_access_tokens` 中验证哈希值。
+
+1. 准备一个明文 token（示例：`wx2n_prod_xxx`）。
+2. 生成 SHA-256 哈希：
+```bash
+npm run token:hash -- "wx2n_prod_xxx"
+```
+3. 把上一步输出的哈希写入 D1（本地示例）：
+```bash
+npx wrangler d1 execute wx2notion-db --local --command "
+INSERT INTO api_access_tokens
+  (id, user_id, token_hash, label, scopes, is_active, created_at, updated_at)
+VALUES
+  ('token-001', 'demo-user', '<TOKEN_HASH>', 'android-client', '*', 1, datetime('now'), datetime('now'));
+"
+```
+
+远端同理，把 `--local` 改成 `--remote`。
+
+## Notion 同步配置（MVP）
+
+MVP 现支持两种模式：
+
+- `NOTION_MOCK=true`：模拟 Notion 同步（本地默认，便于开发测试）。
+- `NOTION_MOCK=false`：真实调用 Notion API 创建页面。
+
+需要的环境变量：
+
+- `NOTION_MOCK`：`true/false`，默认 `true`（见 `wrangler.toml`）。
+- `NOTION_API_TOKEN`：Notion Integration Token（真实模式必填，建议用 `wrangler secret`）。
+- `NOTION_API_VERSION`：默认 `2022-06-28`。
+- `NOTION_API_BASE_URL`：默认 `https://api.notion.com/v1`。
+
+本地真实联调示例：
+
+```bash
+npx wrangler secret put NOTION_API_TOKEN
+# wrangler.toml 或 Dashboard 中设置 NOTION_MOCK="false"
+npm run dev
+```
+
+注意：
+
+- `/v1/auth/notion/callback` 目前仍是 MVP 简化实现（仅标记 `notion_connected=true`），不含完整 OAuth token 交换/刷新。
+- 真实写入依赖 `NOTION_API_TOKEN` 有目标数据库写入权限，并且数据库已共享给该 integration。
+
+常见同步错误码：
+
+- `NOTION_TOKEN_MISSING`：关闭 mock 但未配置 `NOTION_API_TOKEN`。
+- `NOTION_TARGET_MISSING`：未设置 `target_database_id`。
+- `NOTION_AUTH_FAILED`：token 无效或无权限（401/403）。
+- `NOTION_TARGET_NOT_FOUND`：目标库不存在或未共享（404）。
+- `NOTION_RATE_LIMITED`：Notion 限流（429，可重试）。
+
+## Token 管理 API（管理员）
+
+管理员权限规则：
+- token `scopes` 包含 `*` 或 `admin:tokens` 即可管理 token。
+
+示例：创建 token
+```bash
+curl -X POST "http://127.0.0.1:8787/v1/admin/tokens" \
+  -H "Authorization: Bearer <ADMIN_TOKEN>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "user_id": "android-user-001",
+    "label": "android-client",
+    "scopes": ["items:read", "items:write"],
+    "expires_at": null
+  }'
+```
+
+示例：查询 token 列表
+```bash
+curl "http://127.0.0.1:8787/v1/admin/tokens?active=true" \
+  -H "Authorization: Bearer <ADMIN_TOKEN>"
+```
+
+示例：吊销 token
+```bash
+curl -X POST "http://127.0.0.1:8787/v1/admin/tokens/<TOKEN_ID>/revoke" \
+  -H "Authorization: Bearer <ADMIN_TOKEN>"
+```
+
+## 本地开发
+
+```bash
+npm install
+npm run d1:migrate:local
+npm run dev
+```
+
+默认开发 token：`dev-token`（可在 `wrangler.toml` 的 `[vars]` 中调整）。
+说明：仅当未绑定 D1 时使用该回退逻辑；绑定 D1 后将以 `api_access_tokens` 为准。
+
+## 测试与类型检查
+
+```bash
+npm run typecheck
+npm test
+```
+
+注：测试默认注入 InMemoryStore，避免依赖真实 D1 资源。
+
+## 部署
+
+```bash
+npm run deploy
+```

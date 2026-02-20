@@ -1,0 +1,21 @@
+{
+  "name": "wx2notion-backend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "d1:migrate:local": "wrangler d1 migrations apply wx2notion-db --local",
+    "d1:migrate:remote": "wrangler d1 migrations apply wx2notion-db --remote",
+    "token:hash": "node scripts/hash-token.mjs"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.0",
+    "vitest": "~3.2.0",
+    "wrangler": "^4.0.0"
+  }
+}

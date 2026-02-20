@@ -1,0 +1,16 @@
+name = "wx2notion-api"
+main = "src/index.ts"
+compatibility_date = "2026-02-20"
+
+[vars]
+WX2NOTION_DEV_TOKEN = "dev-token"
+NOTION_MOCK = "true"
+NOTION_API_VERSION = "2022-06-28"
+NOTION_API_BASE_URL = "https://api.notion.com/v1"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "wx2notion-db"
+database_id = "00000000-0000-0000-0000-000000000000"
+preview_database_id = "00000000-0000-0000-0000-000000000000"
+migrations_dir = "migrations"
