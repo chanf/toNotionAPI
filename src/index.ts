@@ -588,19 +588,44 @@ export function createApp(options?: { store?: Store }) {
     } catch {
       return errorResponse(400, "BAD_REQUEST", "Invalid JSON body.");
     }
-    if (!isObjectBody(body) || typeof body.database_id !== "string") {
-      return errorResponse(400, "BAD_REQUEST", "database_id is required.");
+    if (!isObjectBody(body)) {
+      return errorResponse(400, "BAD_REQUEST", "Invalid request body.");
     }
-    const databaseId = body.database_id;
-    const databaseTitle = typeof body.database_title === "string" ? body.database_title : null;
+    const rawTargetId =
+      typeof body.target_id === "string"
+        ? body.target_id
+        : typeof body.database_id === "string"
+          ? body.database_id
+          : null;
+    if (!rawTargetId || rawTargetId.trim().length === 0) {
+      return errorResponse(400, "BAD_REQUEST", "target_id is required (or legacy database_id).");
+    }
+    const targetId = rawTargetId.trim();
+    const targetTypeRaw =
+      typeof body.target_type === "string"
+        ? body.target_type.trim().toLowerCase()
+        : null;
+    if (targetTypeRaw !== null && targetTypeRaw !== "database" && targetTypeRaw !== "page") {
+      return errorResponse(400, "BAD_REQUEST", "target_type must be database or page.");
+    }
+    const targetTitleRaw =
+      typeof body.target_title === "string"
+        ? body.target_title
+        : typeof body.database_title === "string"
+          ? body.database_title
+          : null;
+    const targetTitle = targetTitleRaw && targetTitleRaw.trim().length > 0 ? targetTitleRaw.trim() : null;
 
     return withStore(env, async (store) => {
       const settings = await store.upsertSettings({
         userId: auth.auth.userId,
-        targetDatabaseId: databaseId,
-        targetDatabaseTitle: databaseTitle
+        targetDatabaseId: targetId,
+        targetDatabaseTitle: targetTitle
       });
       return jsonResponse({
+        target_id: settings.target_database_id,
+        target_title: settings.target_database_title,
+        target_type: targetTypeRaw,
         database_id: settings.target_database_id,
         database_title: settings.target_database_title
       });

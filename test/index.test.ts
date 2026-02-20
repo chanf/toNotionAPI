@@ -170,6 +170,49 @@ describe("workers backend api", () => {
     expect(response.status).toBe(401);
   });
 
+  it("supports page target settings with target_id", async () => {
+    const app = createApp({ store: new InMemoryStore() });
+    const ctx = new TestContext();
+    const response = await sendJson(
+      app,
+      ctx,
+      "/v1/settings/notion-target",
+      "PUT",
+      {
+        target_id: "30db8736e20380c2bcb2f33e5c776c36",
+        target_type: "page",
+        target_title: "Notion Parent Page"
+      }
+    );
+    expect(response.status).toBe(200);
+    const payload = await response.json() as {
+      target_id: string;
+      target_type: string | null;
+      target_title: string | null;
+      database_id: string | null;
+    };
+    expect(payload.target_id).toBe("30db8736e20380c2bcb2f33e5c776c36");
+    expect(payload.target_type).toBe("page");
+    expect(payload.target_title).toBe("Notion Parent Page");
+    expect(payload.database_id).toBe("30db8736e20380c2bcb2f33e5c776c36");
+  });
+
+  it("rejects unsupported target_type in settings", async () => {
+    const app = createApp({ store: new InMemoryStore() });
+    const ctx = new TestContext();
+    const response = await sendJson(
+      app,
+      ctx,
+      "/v1/settings/notion-target",
+      "PUT",
+      {
+        target_id: "id-1",
+        target_type: "table"
+      }
+    );
+    expect(response.status).toBe(400);
+  });
+
   it("admin can issue/list/revoke tokens", async () => {
     const app = createApp({ store: new InMemoryStore() });
     const ctx = new TestContext();

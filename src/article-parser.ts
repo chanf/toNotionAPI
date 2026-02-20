@@ -139,6 +139,16 @@ function extractTitleTag(html: string): string | null {
 }
 
 function extractJsVarString(html: string, varName: string): string | null {
+  const htmlDecodePattern = new RegExp(
+    `\\bvar\\s+${escapeRegExp(varName)}\\s*=\\s*htmlDecode\\(\\s*(['"])([\\s\\S]*?)\\1\\s*\\)`,
+    "i"
+  );
+  const htmlDecodeMatch = htmlDecodePattern.exec(html);
+  if (htmlDecodeMatch) {
+    const value = decodeHtmlEntities(decodeJsEscapedText(htmlDecodeMatch[2]));
+    return value.trim() || null;
+  }
+
   const pattern = new RegExp(
     `\\bvar\\s+${escapeRegExp(varName)}\\s*=\\s*(['"])([\\s\\S]*?)\\1\\s*;`,
     "i"
@@ -381,8 +391,8 @@ export async function parseWeChatArticle(sourceUrl: string, rawText: string | nu
 
   const html = await fetchWeChatHtml(sourceUrl);
   const title =
-    extractJsVarString(html, "msg_title") ??
     extractMetaContent(html, "property", "og:title") ??
+    extractJsVarString(html, "msg_title") ??
     extractTitleTag(html) ??
     parseTitleFromUrl(parsedUrl) ??
     `WeChat Article - ${parsedUrl.hostname}`;

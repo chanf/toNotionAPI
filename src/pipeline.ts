@@ -57,7 +57,7 @@ function normalizeNotionRuntime(input: NotionRuntimeInput | undefined): Resolved
 }
 
 function buildNotionPagePayload(input: {
-  databaseId: string;
+  parent: Record<string, string>;
   titlePropertyName: string;
   title: string;
   children: Array<Record<string, unknown>>;
@@ -76,9 +76,7 @@ function buildNotionPagePayload(input: {
   };
 
   return {
-    parent: {
-      database_id: input.databaseId
-    },
+    parent: input.parent,
     properties,
     children: input.children
   };
@@ -120,7 +118,7 @@ function mapNotionHttpError(status: number, detail: string | null): NotionSyncEr
   if (status === 404) {
     return new NotionSyncError(
       "NOTION_TARGET_NOT_FOUND",
-      `Notion target database not found or not shared.${suffix}`,
+      `Notion target not found or not shared.${suffix}`,
       false
     );
   }
@@ -198,6 +196,47 @@ async function resolveNotionTitlePropertyName(
   );
 }
 
+async function ensureNotionPageTarget(targetId: string, runtime: ResolvedNotionRuntime): Promise<void> {
+  const response = await fetch(`${runtime.apiBaseUrl}/pages/${targetId}`, {
+    method: "GET",
+    headers: notionHeaders(runtime)
+  });
+  if (!response.ok) {
+    const detail = await parseNotionErrorMessage(response);
+    throw mapNotionHttpError(response.status, detail);
+  }
+}
+
+async function resolveNotionTarget(input: {
+  targetId: string;
+  runtime: ResolvedNotionRuntime;
+}): Promise<{ parent: Record<string, string>; titlePropertyName: string }> {
+  try {
+    const titlePropertyName = await resolveNotionTitlePropertyName(input.targetId, input.runtime);
+    return {
+      parent: {
+        database_id: input.targetId
+      },
+      titlePropertyName
+    };
+  } catch (error) {
+    if (
+      !(error instanceof NotionSyncError) ||
+      (error.code !== "NOTION_BAD_REQUEST" && error.code !== "NOTION_TARGET_NOT_FOUND")
+    ) {
+      throw error;
+    }
+  }
+
+  await ensureNotionPageTarget(input.targetId, input.runtime);
+  return {
+    parent: {
+      page_id: input.targetId
+    },
+    titlePropertyName: "title"
+  };
+}
+
 async function appendNotionChildren(input: {
   pageId: string;
   children: Array<Record<string, unknown>>;
@@ -240,7 +279,7 @@ async function syncToNotion(input: {
   if (!input.settings.target_database_id) {
     throw new NotionSyncError(
       "NOTION_TARGET_MISSING",
-      "Notion target database is not configured.",
+      "Notion target id is not configured.",
       false
     );
   }
@@ -268,10 +307,10 @@ async function syncToNotion(input: {
     );
   }
 
-  const titlePropertyName = await resolveNotionTitlePropertyName(
-    input.settings.target_database_id,
+  const target = await resolveNotionTarget({
+    targetId: input.settings.target_database_id,
     runtime
-  );
+  });
   const children = buildNotionChildrenBlocks({
     normalizedUrl: input.normalizedUrl,
     article: input.article
@@ -284,8 +323,8 @@ async function syncToNotion(input: {
     headers: notionHeaders(runtime),
     body: JSON.stringify(
       buildNotionPagePayload({
-        databaseId: input.settings.target_database_id,
-        titlePropertyName,
+        parent: target.parent,
+        titlePropertyName: target.titlePropertyName,
         title: input.article.title,
         children: firstBatch
       })
