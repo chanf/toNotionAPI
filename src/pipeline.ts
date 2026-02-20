@@ -1,3 +1,4 @@
+import { createLogger, serializeError, type Logger } from "./logger";
 import type { Store } from "./store";
 import { nowIso, randomId } from "./utils";
 
@@ -331,15 +332,33 @@ async function syncToNotion(input: {
 
 export async function processItem(
   store: Store,
-  input: { userId: string; itemId: string; notion?: NotionRuntimeInput }
+  input: { userId: string; itemId: string; notion?: NotionRuntimeInput; logger?: Logger }
 ): Promise<void> {
   const traceId = randomId().replaceAll("-", "");
+  const logger =
+    input.logger?.child({ trace_id: traceId }) ??
+    createLogger({
+      service: "tonotionapi-pipeline",
+      bindings: {
+        trace_id: traceId
+      }
+    });
+
+  logger.info("pipeline.started", {
+    user_id: input.userId,
+    item_id: input.itemId
+  });
+
   const item = await store.patchItem({
     userId: input.userId,
     itemId: input.itemId,
     fields: { status: "PARSING", error: null }
   });
   if (!item) {
+    logger.warn("pipeline.item_not_found", {
+      user_id: input.userId,
+      item_id: input.itemId
+    });
     return;
   }
 
@@ -356,6 +375,10 @@ export async function processItem(
         content_plaintext: parsedArticle.contentPlaintext
       }
     });
+    logger.info("pipeline.parse.succeeded", {
+      user_id: input.userId,
+      item_id: input.itemId
+    });
   } catch (error) {
     if (error instanceof ParserError) {
       await store.setError({
@@ -366,6 +389,13 @@ export async function processItem(
         message: error.message,
         retriable: error.retriable,
         traceId
+      });
+      logger.warn("pipeline.parse.failed", {
+        user_id: input.userId,
+        item_id: input.itemId,
+        code: error.code,
+        retriable: error.retriable,
+        error_message: error.message
       });
       return;
     }
@@ -378,6 +408,13 @@ export async function processItem(
       retriable: true,
       traceId
     });
+    logger.error("pipeline.parse.failed", {
+      user_id: input.userId,
+      item_id: input.itemId,
+      code: "PARSE_UNKNOWN",
+      retriable: true,
+      error: serializeError(error)
+    });
     return;
   }
 
@@ -387,6 +424,10 @@ export async function processItem(
     fields: { status: "SYNCING", error: null }
   });
   if (!syncingItem) {
+    logger.warn("pipeline.sync.skipped_item_missing", {
+      user_id: input.userId,
+      item_id: input.itemId
+    });
     return;
   }
 
@@ -409,6 +450,11 @@ export async function processItem(
         updated_at: nowIso()
       }
     });
+    logger.info("pipeline.sync.succeeded", {
+      user_id: input.userId,
+      item_id: input.itemId,
+      notion_page_id: notion.notionPageId
+    });
   } catch (error) {
     if (error instanceof NotionSyncError) {
       await store.setError({
@@ -420,6 +466,13 @@ export async function processItem(
         retriable: error.retriable,
         traceId
       });
+      logger.warn("pipeline.sync.failed", {
+        user_id: input.userId,
+        item_id: input.itemId,
+        code: error.code,
+        retriable: error.retriable,
+        error_message: error.message
+      });
       return;
     }
     await store.setError({
@@ -430,6 +483,13 @@ export async function processItem(
       message: "Unknown sync error.",
       retriable: true,
       traceId
+    });
+    logger.error("pipeline.sync.failed", {
+      user_id: input.userId,
+      item_id: input.itemId,
+      code: "SYNC_UNKNOWN",
+      retriable: true,
+      error: serializeError(error)
     });
   }
 }

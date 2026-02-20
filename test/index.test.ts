@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { createApp, type Env, type ExecutionContextLike } from "../src/index";
 import { InMemoryStore } from "../src/store";
 
-const DEV_ENV: Env = { WX2NOTION_DEV_TOKEN: "dev-token", NOTION_MOCK: "true" };
+const DEV_ENV: Env = { WX2NOTION_DEV_TOKEN: "dev-token", NOTION_MOCK: "true", LOG_LEVEL: "error" };
 const AUTH_HEADER = { Authorization: "Bearer dev-token" };
 
 class TestContext implements ExecutionContextLike {
@@ -273,7 +273,11 @@ describe("workers backend api", () => {
   it("fails sync when notion token is missing in real mode", async () => {
     const app = createApp({ store: new InMemoryStore() });
     const ctx = new TestContext();
-    const realModeEnv: Env = { WX2NOTION_DEV_TOKEN: "dev-token", NOTION_MOCK: "false" };
+    const realModeEnv: Env = {
+      WX2NOTION_DEV_TOKEN: "dev-token",
+      NOTION_MOCK: "false",
+      LOG_LEVEL: "error"
+    };
 
     await connectNotion(app, ctx, realModeEnv);
     await setTargetDatabase(app, ctx, realModeEnv);

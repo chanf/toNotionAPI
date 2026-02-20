@@ -1,4 +1,5 @@
 import type { D1Database } from "./d1";
+import { createLogger, serializeError, type Logger } from "./logger";
 import { OPENAPI_YAML } from "./openapi";
 import { processItem, type NotionRuntimeInput } from "./pipeline";
 import { D1Store, type Store } from "./store";
@@ -12,6 +13,7 @@ export interface Env {
   NOTION_API_VERSION?: string;
   NOTION_API_BASE_URL?: string;
   NOTION_MOCK?: string;
+  LOG_LEVEL?: string;
   DB?: D1Database;
 }
 
@@ -315,7 +317,8 @@ export function createApp(options?: { store?: Store }) {
   async function handleIngest(
     request: Request,
     env: Env,
-    ctx: ExecutionContextLike
+    ctx: ExecutionContextLike,
+    logger: Logger
   ): Promise<Response | null> {
     const url = new URL(request.url);
     if (request.method !== "POST" || url.pathname !== "/v1/ingest") {
@@ -355,14 +358,29 @@ export function createApp(options?: { store?: Store }) {
       });
 
       if (!result.duplicated) {
+        const taskLogger = logger.child({
+          item_id: result.item.id,
+          user_id: auth.auth.userId
+        });
         ctx.waitUntil(
           processItem(store, {
             userId: auth.auth.userId,
             itemId: result.item.id,
-            notion: notionRuntime
+            notion: notionRuntime,
+            logger: taskLogger
+          }).catch((error) => {
+            taskLogger.error("pipeline.unhandled", {
+              error: serializeError(error)
+            });
           })
         );
       }
+
+      logger.info("ingest.accepted", {
+        user_id: auth.auth.userId,
+        item_id: result.item.id,
+        duplicated: result.duplicated
+      });
 
       return jsonResponse(
         {
@@ -437,7 +455,8 @@ export function createApp(options?: { store?: Store }) {
   async function handleRetry(
     request: Request,
     env: Env,
-    ctx: ExecutionContextLike
+    ctx: ExecutionContextLike,
+    logger: Logger
   ): Promise<Response | null> {
     if (request.method !== "POST") {
       return null;
@@ -467,13 +486,27 @@ export function createApp(options?: { store?: Store }) {
         itemId,
         fields: { status: "RECEIVED", error: null }
       });
+      const taskLogger = logger.child({
+        item_id: itemId,
+        user_id: auth.auth.userId
+      });
       ctx.waitUntil(
         processItem(store, {
           userId: auth.auth.userId,
           itemId,
-          notion: notionRuntime
+          notion: notionRuntime,
+          logger: taskLogger
+        }).catch((error) => {
+          taskLogger.error("pipeline.unhandled", {
+            error: serializeError(error)
+          });
         })
       );
+
+      logger.info("item.retry.accepted", {
+        user_id: auth.auth.userId,
+        item_id: itemId
+      });
 
       return jsonResponse(
         {
@@ -694,29 +727,62 @@ export function createApp(options?: { store?: Store }) {
   }
 
   async function fetch(request: Request, env: Env, ctx: ExecutionContextLike): Promise<Response> {
-    const handlers = [
-      () => handleHealthz(request),
-      () => handleDocs(request),
-      () => handleOpenApiSpec(request),
-      () => handleIngest(request, env, ctx),
-      () => handleListItems(request, env),
-      () => handleGetItem(request, env),
-      () => handleRetry(request, env, ctx),
-      () => handleAuthStart(request, env),
-      () => handleAuthCallback(request, env),
-      () => handleUpdateTarget(request, env),
-      () => handleAdminCreateToken(request, env),
-      () => handleAdminListTokens(request, env),
-      () => handleAdminRevokeToken(request, env)
-    ];
-
-    for (const handler of handlers) {
-      const response = await handler();
-      if (response) {
-        return response;
+    const start = Date.now();
+    const url = new URL(request.url);
+    const requestId = randomId().replaceAll("-", "");
+    const logger = createLogger({
+      service: "tonotionapi",
+      minLevel: env.LOG_LEVEL,
+      bindings: {
+        request_id: requestId,
+        method: request.method,
+        path: url.pathname
       }
+    });
+
+    logger.info("request.received");
+
+    try {
+      const handlers = [
+        () => handleHealthz(request),
+        () => handleDocs(request),
+        () => handleOpenApiSpec(request),
+        () => handleIngest(request, env, ctx, logger),
+        () => handleListItems(request, env),
+        () => handleGetItem(request, env),
+        () => handleRetry(request, env, ctx, logger),
+        () => handleAuthStart(request, env),
+        () => handleAuthCallback(request, env),
+        () => handleUpdateTarget(request, env),
+        () => handleAdminCreateToken(request, env),
+        () => handleAdminListTokens(request, env),
+        () => handleAdminRevokeToken(request, env)
+      ];
+
+      for (const handler of handlers) {
+        const response = await handler();
+        if (response) {
+          logger.info("request.completed", {
+            status: response.status,
+            duration_ms: Date.now() - start
+          });
+          return response;
+        }
+      }
+
+      const notFound = createNotFound();
+      logger.info("request.completed", {
+        status: notFound.status,
+        duration_ms: Date.now() - start
+      });
+      return notFound;
+    } catch (error) {
+      logger.error("request.failed", {
+        duration_ms: Date.now() - start,
+        error: serializeError(error)
+      });
+      return errorResponse(500, "INTERNAL_ERROR", "Unexpected server error.", requestId);
     }
-    return createNotFound();
   }
 
   return {

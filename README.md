@@ -124,6 +124,7 @@ MVP 现支持两种模式：
 - `NOTION_API_TOKEN`：Notion Integration Token（真实模式必填，建议用 `wrangler secret`）。
 - `NOTION_API_VERSION`：默认 `2022-06-28`。
 - `NOTION_API_BASE_URL`：默认 `https://api.notion.com/v1`。
+- `LOG_LEVEL`：日志级别，支持 `debug/info/warn/error`，默认 `info`。
 
 本地真实联调示例：
 
@@ -256,6 +257,22 @@ npm run deploy
 2. 使用管理员 token 调用 `POST /v1/admin/tokens` 创建业务 token
 3. 使用业务 token 调用 `POST /v1/ingest` 验证入库与异步状态流转
 
+### 7) 服务端日志与排障
+
+本项目已内置结构化日志（JSON 行日志），覆盖：
+
+- 请求入口：`request.received` / `request.completed` / `request.failed`
+- 同步流水线：`pipeline.started` / `pipeline.parse.*` / `pipeline.sync.*`
+- 异步任务兜底：`pipeline.unhandled`
+
+线上查看日志：
+
+```bash
+npx wrangler tail tonotionapi
+```
+
+按级别过滤日志可通过 `LOG_LEVEL` 控制（`debug/info/warn/error`）。
+
 ## FAQ（部署排障）
 
 ### Q1：`https://tonotion.iiioiii.xin/docs` 无法访问（404），但 `workers.dev` 可以访问，为什么？
@@ -299,25 +316,52 @@ npm run deploy
 
 ## GitHub Actions 自动发布 Worker
 
-仓库已提供工作流：`.github/workflows/deploy-worker.yml`
+仓库已提供自动发布工作流：`.github/workflows/deploy-worker.yml`
 
 触发条件：
 
 - push 到 `main`
 - 或手动触发 `workflow_dispatch`
 
-发布流程：
+### 一次性配置
+
+在 GitHub 仓库中配置以下 Actions Secrets（否则自动发布会失败）：
+
+- `CLOUDFLARE_API_TOKEN`
+- `CLOUDFLARE_ACCOUNT_ID`
+
+`CLOUDFLARE_API_TOKEN` 建议权限最少包含：
+
+- `Workers Scripts:Edit`
+- `Workers Routes:Edit`
+- `Account Settings:Read`
+- `D1:Edit`（如果工作流中会执行 migration）
+
+`CLOUDFLARE_ACCOUNT_ID` 可通过 `wrangler whoami` 查看。
+
+### 自动发布流程
 
 1. `npm ci`
 2. `npm run typecheck`
 3. `npm test`
 4. `npm run deploy -- --name tonotionapi --keep-vars`
 
-请在 GitHub 仓库中配置以下 Actions Secrets（否则自动发布会失败）：
-
-- `CLOUDFLARE_API_TOKEN`
-- `CLOUDFLARE_ACCOUNT_ID`
-
 说明：
 
 - `--keep-vars` 用于保留 Cloudflare Dashboard 中已配置的运行时变量，避免每次发布被清空。
+- 工作流中已固定部署名为 `tonotionapi`，保证与线上 Worker 一致。
+
+### 如何验证自动发布生效
+
+1. 推送到 `main` 后，在 GitHub Actions 页面确认 `Deploy Worker` 成功。
+2. 在 Cloudflare 上查看 Worker 最新 Deployment 时间是否更新。
+3. 验证线上接口：
+   - `https://tonotion.iiioiii.xin/healthz`
+   - `https://tonotion.iiioiii.xin/docs`
+   - `https://tonotion.iiioiii.xin/openapi.yaml`
+
+### 常见失败原因
+
+- 未配置或配置错误的 `CLOUDFLARE_API_TOKEN` / `CLOUDFLARE_ACCOUNT_ID`
+- token 权限不足（通常会在 Actions 日志中看到 403/鉴权错误）
+- `main` 分支保护策略导致工作流无法运行
