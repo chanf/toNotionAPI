@@ -127,6 +127,44 @@ VALUES
 
 远端同理，把 `--local` 改成 `--remote`。
 
+### 首次创建超级管理员 Token（用于 `/console` 登录）
+
+如果你还没有任何管理员 token，可按下面步骤初始化一个超管（示例 `user_id=feng`）：
+
+```bash
+# 1) 生成一个明文超管 token（可自定义）
+SUPER_ADMIN_TOKEN="wx2n_admin_feng_$(date +%Y%m%d_%H%M%S)"
+TOKEN_ID="token-superadmin-feng-$(date +%s)"
+
+# 2) 计算哈希
+TOKEN_HASH=$(npm run -s token:hash -- "$SUPER_ADMIN_TOKEN")
+
+# 3) 写入远端 D1（scope 使用 *，拥有管理能力）
+npx wrangler d1 execute wx2notion-db --remote --command "
+INSERT INTO api_access_tokens
+  (id, user_id, token_hash, label, scopes, is_active, created_at, updated_at)
+VALUES
+  ('$TOKEN_ID', 'feng', '$TOKEN_HASH', 'super-admin-bootstrap', '*', 1, datetime('now'), datetime('now'));
+"
+
+# 4) 输出明文 token（仅此处可见，请妥善保存）
+echo \"SUPER_ADMIN_TOKEN=$SUPER_ADMIN_TOKEN\"
+```
+
+验证超管 token 是否生效：
+
+```bash
+curl "https://tonotion.iiioiii.xin/v1/me" \
+  -H "Authorization: Bearer $SUPER_ADMIN_TOKEN"
+```
+
+返回中出现 `is_admin: true` 即表示可用于 `https://tonotion.iiioiii.xin/console` 登录。
+
+注意：
+
+- 如果调用 `/v1/me` 返回 `INTERNAL_ERROR`，通常是远端 D1 尚未应用 `0003_multi_user_admin_console.sql`。
+- 先执行 `npm run d1:migrate:remote`，再重试上述验证命令。
+
 ## Notion 同步配置（MVP）
 
 MVP 现支持两种模式：
