@@ -117,6 +117,30 @@ async function waitForStatus(
 }
 
 describe("workers backend api", () => {
+  it("serves openapi yaml for external api consumers", async () => {
+    const app = createApp();
+    const ctx = new TestContext();
+
+    const response = await send(app, ctx, "/openapi.yaml", { method: "GET" });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toContain("application/yaml");
+    const content = await response.text();
+    expect(content).toContain("openapi: 3.0.3");
+    expect(content).toContain("/v1/ingest:");
+  });
+
+  it("serves interactive api docs page", async () => {
+    const app = createApp();
+    const ctx = new TestContext();
+
+    const response = await send(app, ctx, "/docs", { method: "GET" });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toContain("text/html");
+    const html = await response.text();
+    expect(html).toContain("SwaggerUIBundle");
+    expect(html).toContain("/openapi.yaml");
+  });
+
   it("returns 500 when DB binding is missing", async () => {
     const app = createApp();
     const ctx = new TestContext();

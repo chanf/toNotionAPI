@@ -1,3 +1,6 @@
+// Synchronized from docs/openapi.yaml for runtime API docs.
+// Update this file when docs/openapi.yaml changes.
+export const OPENAPI_YAML = String.raw`
 openapi: 3.0.3
 info:
   title: WX2Notion API
@@ -598,3 +601,4 @@ components:
         - SYNCING
         - SYNC_FAILED
         - SYNCED
+`;

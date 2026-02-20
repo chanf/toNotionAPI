@@ -1,4 +1,5 @@
 import type { D1Database } from "./d1";
+import { OPENAPI_YAML } from "./openapi";
 import { processItem, type NotionRuntimeInput } from "./pipeline";
 import { D1Store, type Store } from "./store";
 import type { ApiAccessToken, IngestRequest, ItemStatus } from "./types";
@@ -19,6 +20,8 @@ export interface ExecutionContextLike {
 }
 
 const DEMO_USER_ID = "demo-user";
+const OPENAPI_SPEC_PATH = "/openapi.yaml";
+const SWAGGER_UI_DIST_BASE_URL = "https://cdn.jsdelivr.net/npm/swagger-ui-dist@5";
 type AuthContext = {
   userId: string;
   isAdmin: boolean;
@@ -113,6 +116,57 @@ function parsePageSize(url: URL): number {
 
 function createNotFound(): Response {
   return errorResponse(404, "NOT_FOUND", "Route not found.");
+}
+
+function textResponse(body: string, contentType: string): Response {
+  return new Response(body, {
+    headers: {
+      "content-type": contentType
+    }
+  });
+}
+
+function htmlResponse(html: string): Response {
+  return textResponse(html, "text/html; charset=utf-8");
+}
+
+function buildSwaggerUiHtml(specUrl: string): string {
+  const serializedSpecUrl = JSON.stringify(specUrl);
+  return `<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>WX2Notion API Docs</title>
+    <link rel="stylesheet" href="${SWAGGER_UI_DIST_BASE_URL}/swagger-ui.css" />
+    <style>
+      body {
+        margin: 0;
+        background: #f5f5f6;
+      }
+      .topbar {
+        display: none;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="swagger-ui"></div>
+    <script src="${SWAGGER_UI_DIST_BASE_URL}/swagger-ui-bundle.js"></script>
+    <script src="${SWAGGER_UI_DIST_BASE_URL}/swagger-ui-standalone-preset.js"></script>
+    <script>
+      window.addEventListener("load", () => {
+        SwaggerUIBundle({
+          url: ${serializedSpecUrl},
+          dom_id: "#swagger-ui",
+          deepLinking: true,
+          displayRequestDuration: true,
+          presets: [SwaggerUIBundle.presets.apis, SwaggerUIStandalonePreset],
+          layout: "BaseLayout"
+        });
+      });
+    </script>
+  </body>
+</html>`;
 }
 
 function toPublicToken(token: ApiAccessToken): Record<string, unknown> {
@@ -239,6 +293,23 @@ export function createApp(options?: { store?: Store }) {
       return jsonResponse({ status: "ok" });
     }
     return null;
+  }
+
+  async function handleOpenApiSpec(request: Request): Promise<Response | null> {
+    const url = new URL(request.url);
+    if (request.method !== "GET" || url.pathname !== OPENAPI_SPEC_PATH) {
+      return null;
+    }
+    return textResponse(OPENAPI_YAML, "application/yaml; charset=utf-8");
+  }
+
+  async function handleDocs(request: Request): Promise<Response | null> {
+    const url = new URL(request.url);
+    if (request.method !== "GET" || (url.pathname !== "/docs" && url.pathname !== "/docs/")) {
+      return null;
+    }
+    const specUrl = `${url.origin}${OPENAPI_SPEC_PATH}`;
+    return htmlResponse(buildSwaggerUiHtml(specUrl));
   }
 
   async function handleIngest(
@@ -625,6 +696,8 @@ export function createApp(options?: { store?: Store }) {
   async function fetch(request: Request, env: Env, ctx: ExecutionContextLike): Promise<Response> {
     const handlers = [
       () => handleHealthz(request),
+      () => handleDocs(request),
+      () => handleOpenApiSpec(request),
       () => handleIngest(request, env, ctx),
       () => handleListItems(request, env),
       () => handleGetItem(request, env),
