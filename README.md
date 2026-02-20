@@ -329,54 +329,18 @@ npx wrangler tail tonotionapi
    npm run deploy
    ```
 
-## GitHub Actions 自动发布 Worker
+## 部署策略
 
-仓库已提供自动发布工作流：`.github/workflows/deploy-worker.yml`
+当前仓库不再使用 GitHub Actions 自动发布 Worker。
 
-触发条件：
+统一采用 Cloudflare Worker 原生部署方式：
 
-- push 到 `main`
-- 或手动触发 `workflow_dispatch`
-
-### 一次性配置
-
-在 GitHub 仓库中配置以下 Actions Secrets（否则自动发布会失败）：
-
-- `CLOUDFLARE_API_TOKEN`
-- `CLOUDFLARE_ACCOUNT_ID`
-
-`CLOUDFLARE_API_TOKEN` 建议权限最少包含：
-
-- `Workers Scripts:Edit`
-- `Workers Routes:Edit`
-- `Account Settings:Read`
-- `D1:Edit`（如果工作流中会执行 migration）
-
-`CLOUDFLARE_ACCOUNT_ID` 可通过 `wrangler whoami` 查看。
-
-### 自动发布流程
-
-1. `npm ci`
-2. `npm run typecheck`
-3. `npm test`
-4. `npm run deploy -- --name tonotionapi --keep-vars`
-
-说明：
-
-- `--keep-vars` 用于保留 Cloudflare Dashboard 中已配置的运行时变量，避免每次发布被清空。
-- 工作流中已固定部署名为 `tonotionapi`，保证与线上 Worker 一致。
-
-### 如何验证自动发布生效
-
-1. 推送到 `main` 后，在 GitHub Actions 页面确认 `Deploy Worker` 成功。
-2. 在 Cloudflare 上查看 Worker 最新 Deployment 时间是否更新。
+1. 本地执行部署：
+   ```bash
+   npm run deploy -- --name tonotionapi --keep-vars
+   ```
+2. 在 Cloudflare Dashboard 查看最新 Deployment 是否更新。
 3. 验证线上接口：
    - `https://tonotion.iiioiii.xin/healthz`
    - `https://tonotion.iiioiii.xin/docs`
    - `https://tonotion.iiioiii.xin/openapi.yaml`
-
-### 常见失败原因
-
-- 未配置或配置错误的 `CLOUDFLARE_API_TOKEN` / `CLOUDFLARE_ACCOUNT_ID`
-- token 权限不足（通常会在 Actions 日志中看到 403/鉴权错误）
-- `main` 分支保护策略导致工作流无法运行
