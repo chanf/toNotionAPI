@@ -24,3 +24,7 @@ coverage/
 .DS_Store
 .vscode/
 .idea/
+
+
+.wrangler-dryrun/
+.wrangler-dryrun-tonotionapi/
