@@ -138,11 +138,8 @@ npm run dev
 注意：
 
 - `/v1/auth/notion/callback` 目前仍是 MVP 简化实现（仅标记 `notion_connected=true`），不含完整 OAuth token 交换/刷新。
-- 真实写入依赖 `NOTION_API_TOKEN` 有目标数据库写入权限，并且数据库已共享给该 integration。
-- `PUT /v1/settings/notion-target` 的 `target_id` 支持两种目标：
-  - Notion 数据库 ID：按数据库条目创建页面。
-  - Notion 页面 ID：按该页面的子页面创建文章。
-- 兼容字段 `database_id` 仍可用，但推荐改用 `target_id`。
+- 真实写入依赖 `NOTION_API_TOKEN` 具备目标页面写入权限，并且该页面已共享给 integration。
+- `PUT /v1/settings/notion-target` 仅支持 `page_id`，表示 Notion 父页面 ID（文章会作为该页面的子页面创建）。
 
 示例（推荐）：
 
@@ -151,8 +148,8 @@ curl -X PUT "https://tonotion.iiioiii.xin/v1/settings/notion-target" \
   -H "Authorization: Bearer <API_TOKEN>" \
   -H "Content-Type: application/json" \
   -d '{
-    "target_id": "<NOTION_DATABASE_OR_PAGE_ID>",
-    "target_type": "page"
+    "page_id": "<NOTION_PARENT_PAGE_ID>",
+    "page_title": "公众号文章收集"
   }'
 ```
 
@@ -173,9 +170,9 @@ curl -X PUT "https://tonotion.iiioiii.xin/v1/settings/notion-target" \
 常见同步错误码：
 
 - `NOTION_TOKEN_MISSING`：关闭 mock 但未配置 `NOTION_API_TOKEN`。
-- `NOTION_TARGET_MISSING`：未设置 Notion 目标 ID（`target_id`）。
+- `NOTION_TARGET_MISSING`：未设置 Notion 目标页面 ID（`page_id`）。
 - `NOTION_AUTH_FAILED`：token 无效或无权限（401/403）。
-- `NOTION_TARGET_NOT_FOUND`：目标库不存在或未共享（404）。
+- `NOTION_TARGET_NOT_FOUND`：目标页面不存在或未共享（404）。
 - `NOTION_RATE_LIMITED`：Notion 限流（429，可重试）。
 
 ## Token 管理 API（管理员）

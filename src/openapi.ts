@@ -171,7 +171,7 @@ paths:
   /v1/settings/notion-target:
     put:
       tags: [Settings]
-      summary: Set target Notion id (database or page) for current user
+      summary: Set target Notion parent page id for current user
       operationId: updateNotionTarget
       security:
         - bearerAuth: []
@@ -454,46 +454,23 @@ components:
     UpdateNotionTargetRequest:
       type: object
       required:
-        - target_id
+        - page_id
       properties:
-        target_id:
+        page_id:
           type: string
-          description: Notion database ID or page ID.
-        target_type:
-          type: string
-          enum: [database, page]
-          nullable: true
-          description: Optional hint for client side. Server still auto-detects target kind at sync time.
-        target_title:
+          description: Notion parent page ID.
+        page_title:
           type: string
           nullable: true
           description: Optional label for display only.
-        database_id:
-          type: string
-          nullable: true
-          description: Legacy alias of target_id.
-        database_title:
-          type: string
-          nullable: true
-          description: Legacy alias of target_title.
     UpdateNotionTargetResponse:
       type: object
       required:
-        - target_id
+        - page_id
       properties:
-        target_id:
+        page_id:
           type: string
-        target_type:
-          type: string
-          enum: [database, page]
-          nullable: true
-        target_title:
-          type: string
-          nullable: true
-        database_id:
-          type: string
-          nullable: true
-        database_title:
+        page_title:
           type: string
           nullable: true
     AdminCreateTokenRequest:

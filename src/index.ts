@@ -591,43 +591,33 @@ export function createApp(options?: { store?: Store }) {
     if (!isObjectBody(body)) {
       return errorResponse(400, "BAD_REQUEST", "Invalid request body.");
     }
-    const rawTargetId =
-      typeof body.target_id === "string"
-        ? body.target_id
-        : typeof body.database_id === "string"
-          ? body.database_id
+    const rawPageId =
+      typeof body.page_id === "string"
+        ? body.page_id
+        : typeof body.target_id === "string"
+          ? body.target_id
           : null;
-    if (!rawTargetId || rawTargetId.trim().length === 0) {
-      return errorResponse(400, "BAD_REQUEST", "target_id is required (or legacy database_id).");
+    if (!rawPageId || rawPageId.trim().length === 0) {
+      return errorResponse(400, "BAD_REQUEST", "page_id is required.");
     }
-    const targetId = rawTargetId.trim();
-    const targetTypeRaw =
-      typeof body.target_type === "string"
-        ? body.target_type.trim().toLowerCase()
-        : null;
-    if (targetTypeRaw !== null && targetTypeRaw !== "database" && targetTypeRaw !== "page") {
-      return errorResponse(400, "BAD_REQUEST", "target_type must be database or page.");
-    }
-    const targetTitleRaw =
-      typeof body.target_title === "string"
-        ? body.target_title
-        : typeof body.database_title === "string"
-          ? body.database_title
+    const pageId = rawPageId.trim();
+    const pageTitleRaw =
+      typeof body.page_title === "string"
+        ? body.page_title
+        : typeof body.target_title === "string"
+          ? body.target_title
           : null;
-    const targetTitle = targetTitleRaw && targetTitleRaw.trim().length > 0 ? targetTitleRaw.trim() : null;
+    const pageTitle = pageTitleRaw && pageTitleRaw.trim().length > 0 ? pageTitleRaw.trim() : null;
 
     return withStore(env, async (store) => {
       const settings = await store.upsertSettings({
         userId: auth.auth.userId,
-        targetDatabaseId: targetId,
-        targetDatabaseTitle: targetTitle
+        targetPageId: pageId,
+        targetPageTitle: pageTitle
       });
       return jsonResponse({
-        target_id: settings.target_database_id,
-        target_title: settings.target_database_title,
-        target_type: targetTypeRaw,
-        database_id: settings.target_database_id,
-        database_title: settings.target_database_title
+        page_id: settings.target_page_id,
+        page_title: settings.target_page_title
       });
     });
   }

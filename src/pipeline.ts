@@ -58,26 +58,22 @@ function normalizeNotionRuntime(input: NotionRuntimeInput | undefined): Resolved
 
 function buildNotionPagePayload(input: {
   parent: Record<string, string>;
-  titlePropertyName: string;
   title: string;
   children: Array<Record<string, unknown>>;
 }): Record<string, unknown> {
   const title = truncateText(input.title || "WeChat Article", NOTION_TITLE_MAX_LENGTH);
-  const properties: Record<string, unknown> = {};
-  properties[input.titlePropertyName] = {
-    title: [
-      {
-        type: "text",
-        text: {
-          content: title
-        }
-      }
-    ]
-  };
-
   return {
     parent: input.parent,
-    properties,
+    properties: {
+      title: [
+        {
+          type: "text",
+          text: {
+            content: title
+          }
+        }
+      ]
+    },
     children: input.children
   };
 }
@@ -118,7 +114,7 @@ function mapNotionHttpError(status: number, detail: string | null): NotionSyncEr
   if (status === 404) {
     return new NotionSyncError(
       "NOTION_TARGET_NOT_FOUND",
-      `Notion target not found or not shared.${suffix}`,
+      `Notion target page not found or not shared.${suffix}`,
       false
     );
   }
@@ -154,48 +150,6 @@ function chunkArray<T>(input: T[], size: number): T[][] {
   return chunks;
 }
 
-async function resolveNotionTitlePropertyName(
-  databaseId: string,
-  runtime: ResolvedNotionRuntime
-): Promise<string> {
-  const response = await fetch(`${runtime.apiBaseUrl}/databases/${databaseId}`, {
-    method: "GET",
-    headers: notionHeaders(runtime)
-  });
-  if (!response.ok) {
-    const detail = await parseNotionErrorMessage(response);
-    throw mapNotionHttpError(response.status, detail);
-  }
-
-  const payload = (await response.json()) as Record<string, unknown>;
-  const properties =
-    payload && typeof payload.properties === "object" && payload.properties
-      ? (payload.properties as Record<string, unknown>)
-      : null;
-  if (!properties) {
-    throw new NotionSyncError(
-      "NOTION_SCHEMA_INVALID",
-      "Notion database schema is invalid or missing properties.",
-      false
-    );
-  }
-
-  for (const [name, definition] of Object.entries(properties)) {
-    if (definition && typeof definition === "object") {
-      const propertyType = (definition as Record<string, unknown>).type;
-      if (propertyType === "title") {
-        return name;
-      }
-    }
-  }
-
-  throw new NotionSyncError(
-    "NOTION_SCHEMA_INVALID",
-    "Notion database has no title property.",
-    false
-  );
-}
-
 async function ensureNotionPageTarget(targetId: string, runtime: ResolvedNotionRuntime): Promise<void> {
   const response = await fetch(`${runtime.apiBaseUrl}/pages/${targetId}`, {
     method: "GET",
@@ -205,36 +159,6 @@ async function ensureNotionPageTarget(targetId: string, runtime: ResolvedNotionR
     const detail = await parseNotionErrorMessage(response);
     throw mapNotionHttpError(response.status, detail);
   }
-}
-
-async function resolveNotionTarget(input: {
-  targetId: string;
-  runtime: ResolvedNotionRuntime;
-}): Promise<{ parent: Record<string, string>; titlePropertyName: string }> {
-  try {
-    const titlePropertyName = await resolveNotionTitlePropertyName(input.targetId, input.runtime);
-    return {
-      parent: {
-        database_id: input.targetId
-      },
-      titlePropertyName
-    };
-  } catch (error) {
-    if (
-      !(error instanceof NotionSyncError) ||
-      (error.code !== "NOTION_BAD_REQUEST" && error.code !== "NOTION_TARGET_NOT_FOUND")
-    ) {
-      throw error;
-    }
-  }
-
-  await ensureNotionPageTarget(input.targetId, input.runtime);
-  return {
-    parent: {
-      page_id: input.targetId
-    },
-    titlePropertyName: "title"
-  };
 }
 
 async function appendNotionChildren(input: {
@@ -264,7 +188,7 @@ async function appendNotionChildren(input: {
 
 async function syncToNotion(input: {
   normalizedUrl: string;
-  settings: { notion_connected: boolean; target_database_id: string | null };
+  settings: { notion_connected: boolean; target_page_id: string | null };
   article: ParsedArticle;
   runtime: NotionRuntimeInput | undefined;
 }): Promise<{ notionPageId: string; notionPageUrl: string }> {
@@ -276,10 +200,10 @@ async function syncToNotion(input: {
       false
     );
   }
-  if (!input.settings.target_database_id) {
+  if (!input.settings.target_page_id) {
     throw new NotionSyncError(
       "NOTION_TARGET_MISSING",
-      "Notion target id is not configured.",
+      "Notion target page id is not configured.",
       false
     );
   }
@@ -307,10 +231,7 @@ async function syncToNotion(input: {
     );
   }
 
-  const target = await resolveNotionTarget({
-    targetId: input.settings.target_database_id,
-    runtime
-  });
+  await ensureNotionPageTarget(input.settings.target_page_id, runtime);
   const children = buildNotionChildrenBlocks({
     normalizedUrl: input.normalizedUrl,
     article: input.article
@@ -323,8 +244,9 @@ async function syncToNotion(input: {
     headers: notionHeaders(runtime),
     body: JSON.stringify(
       buildNotionPagePayload({
-        parent: target.parent,
-        titlePropertyName: target.titlePropertyName,
+        parent: {
+          page_id: input.settings.target_page_id
+        },
         title: input.article.title,
         children: firstBatch
       })

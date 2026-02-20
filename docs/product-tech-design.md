@@ -17,7 +17,7 @@
 - Android 端支持接收系统分享（优先 `text/plain` 链接）
 - 识别微信公众号文章链接（`mp.weixin.qq.com`）
 - App 内展示条目列表与详情（标题、摘要、封面、链接、同步状态）
-- 同步到 Notion Database（创建页面 + 可选写入正文块）
+- 同步到 Notion（在目标父页面下创建文章子页面 + 可选写入正文块）
 - 失败可重试，支持幂等去重（同一 URL 不重复写入）
 
 ### 2.2 非 MVP（后续）
@@ -34,7 +34,7 @@
 - 需要把公众号内容沉淀为可检索知识库的个人用户
 
 ### 3.2 用户旅程（MVP）
-1. 用户首次打开 App，完成 Notion 授权并选择目标 Database  
+1. 用户首次打开 App，完成 Notion 授权并选择目标父页面  
 2. 用户在微信文章页点击“分享”，选择 WX2Notion  
 3. App 接收分享内容，创建“收件箱条目”  
 4. 后台解析文章并同步到 Notion  
@@ -43,7 +43,7 @@
 ### 3.3 信息架构
 - `收件箱`：全部、同步中、成功、失败
 - `详情页`：文章元信息、正文预览、同步日志、重试按钮
-- `设置`：Notion 账号、目标库、同步策略（仅链接 / 链接+正文）
+- `设置`：Notion 账号、目标页面、同步策略（仅链接 / 链接+正文）
 
 ### 3.4 关键功能清单
 - 分享接收：支持 `ACTION_SEND` + `text/plain`
@@ -109,7 +109,7 @@
 #### 4.3.1 服务边界
 - `ingest-service`：接收客户端提交链接，做去重与任务入队
 - `parser-worker`：拉取 URL，解析正文与元数据
-- `notion-worker`：写入 Notion Database 与页面块
+- `notion-worker`：写入 Notion 页面与页面块
 - `status-service`：查询任务状态与同步结果
 
 #### 4.3.2 任务流
@@ -132,14 +132,11 @@
 - 服务端持有 `client_secret`，移动端仅拿 session token
 - 存储 `access_token` / `refresh_token`（加密）
 
-#### 4.4.2 数据映射（Notion Database）
-- `Title`：文章标题
-- `Source URL`：原文链接
-- `Source`：固定 `WeChat`
-- `Published At`：可选
-- `Summary`：摘要
-- `Sync Time`：同步时间
-- `Hash`：幂等键（唯一）
+#### 4.4.2 页面结构映射（Notion Page）
+- 页面标题：文章标题
+- 首段：原文链接
+- 正文：Markdown 转 Notion Blocks（分段写入）
+- 元信息（可选）：摘要、抓取时间等内容写入正文区
 
 #### 4.4.3 写入策略
 - 先 `POST /v1/pages` 创建页（写属性）
@@ -242,4 +239,3 @@
   https://developers.notion.com/reference/request-limits
 - Notion OAuth Token  
   https://developers.notion.com/reference/create-a-token
-

@@ -74,7 +74,7 @@ async function connectNotion(
   expect(callback.status).toBe(200);
 }
 
-async function setTargetDatabase(
+async function setTargetPage(
   app: ReturnType<typeof createApp>,
   ctx: TestContext,
   env: Env = DEV_ENV
@@ -84,7 +84,7 @@ async function setTargetDatabase(
     ctx,
     "/v1/settings/notion-target",
     "PUT",
-    { database_id: "db_demo_123", database_title: "WeChat Inbox" },
+    { page_id: "30db8736e20380c2bcb2f33e5c776c36", page_title: "WeChat Inbox" },
     true,
     env
   );
@@ -170,7 +170,7 @@ describe("workers backend api", () => {
     expect(response.status).toBe(401);
   });
 
-  it("supports page target settings with target_id", async () => {
+  it("supports page target settings with page_id", async () => {
     const app = createApp({ store: new InMemoryStore() });
     const ctx = new TestContext();
     const response = await sendJson(
@@ -179,25 +179,20 @@ describe("workers backend api", () => {
       "/v1/settings/notion-target",
       "PUT",
       {
-        target_id: "30db8736e20380c2bcb2f33e5c776c36",
-        target_type: "page",
-        target_title: "Notion Parent Page"
+        page_id: "30db8736e20380c2bcb2f33e5c776c36",
+        page_title: "Notion Parent Page"
       }
     );
     expect(response.status).toBe(200);
     const payload = await response.json() as {
-      target_id: string;
-      target_type: string | null;
-      target_title: string | null;
-      database_id: string | null;
+      page_id: string;
+      page_title: string | null;
     };
-    expect(payload.target_id).toBe("30db8736e20380c2bcb2f33e5c776c36");
-    expect(payload.target_type).toBe("page");
-    expect(payload.target_title).toBe("Notion Parent Page");
-    expect(payload.database_id).toBe("30db8736e20380c2bcb2f33e5c776c36");
+    expect(payload.page_id).toBe("30db8736e20380c2bcb2f33e5c776c36");
+    expect(payload.page_title).toBe("Notion Parent Page");
   });
 
-  it("rejects unsupported target_type in settings", async () => {
+  it("rejects missing page_id in settings", async () => {
     const app = createApp({ store: new InMemoryStore() });
     const ctx = new TestContext();
     const response = await sendJson(
@@ -206,8 +201,7 @@ describe("workers backend api", () => {
       "/v1/settings/notion-target",
       "PUT",
       {
-        target_id: "id-1",
-        target_type: "table"
+        page_title: "No Page ID"
       }
     );
     expect(response.status).toBe(400);
@@ -279,7 +273,7 @@ describe("workers backend api", () => {
     const ctx = new TestContext();
 
     await connectNotion(app, ctx);
-    await setTargetDatabase(app, ctx);
+    await setTargetPage(app, ctx);
 
     const ingest = await sendJson(app, ctx, "/v1/ingest", "POST", {
       client_item_id: "happy-1",
@@ -294,7 +288,7 @@ describe("workers backend api", () => {
     expect(item.notion_page_url).toBeTruthy();
   });
 
-  it("fails sync when notion target database is missing", async () => {
+  it("fails sync when notion target page is missing", async () => {
     const app = createApp({ store: new InMemoryStore() });
     const ctx = new TestContext();
 
@@ -323,7 +317,7 @@ describe("workers backend api", () => {
     };
 
     await connectNotion(app, ctx, realModeEnv);
-    await setTargetDatabase(app, ctx, realModeEnv);
+    await setTargetPage(app, ctx, realModeEnv);
 
     const ingest = await sendJson(
       app,
@@ -351,7 +345,7 @@ describe("workers backend api", () => {
     const ctx = new TestContext();
 
     await connectNotion(app, ctx);
-    await setTargetDatabase(app, ctx);
+    await setTargetPage(app, ctx);
 
     const first = await sendJson(app, ctx, "/v1/ingest", "POST", {
       client_item_id: "dup-1",
@@ -388,7 +382,7 @@ describe("workers backend api", () => {
     expect(failedError.code).toBe("NOTION_NOT_CONNECTED");
 
     await connectNotion(app, ctx);
-    await setTargetDatabase(app, ctx);
+    await setTargetPage(app, ctx);
 
     const retry = await send(app, ctx, `/v1/items/${itemId}/retry`, {
       method: "POST",

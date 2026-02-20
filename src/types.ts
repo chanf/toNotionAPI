@@ -40,8 +40,8 @@ export interface UserSettings {
   user_id: string;
   notion_connected: boolean;
   workspace_name: string | null;
-  target_database_id: string | null;
-  target_database_title: string | null;
+  target_page_id: string | null;
+  target_page_title: string | null;
 }
 
 export interface OAuthState {

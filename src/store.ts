@@ -38,8 +38,8 @@ type SettingsRow = {
   user_id: string;
   notion_connected: number;
   workspace_name: string | null;
-  target_database_id: string | null;
-  target_database_title: string | null;
+  target_page_id: string | null;
+  target_page_title: string | null;
 };
 
 type OAuthRow = {
@@ -105,8 +105,8 @@ function rowToSettings(row: SettingsRow): UserSettings {
     user_id: row.user_id,
     notion_connected: Boolean(row.notion_connected),
     workspace_name: row.workspace_name,
-    target_database_id: row.target_database_id,
-    target_database_title: row.target_database_title
+    target_page_id: row.target_page_id,
+    target_page_title: row.target_page_title
   };
 }
 
@@ -197,8 +197,8 @@ export interface Store {
   }): Promise<ArticleItem | null>;
   upsertSettings(input: {
     userId: string;
-    targetDatabaseId: string;
-    targetDatabaseTitle: string | null;
+    targetPageId: string;
+    targetPageTitle: string | null;
   }): Promise<UserSettings>;
   getSettings(userId: string): Promise<UserSettings>;
   markNotionConnected(input: { userId: string; workspaceName: string }): Promise<UserSettings>;
@@ -245,8 +245,8 @@ export class InMemoryStore implements Store {
       user_id: userId,
       notion_connected: false,
       workspace_name: null,
-      target_database_id: null,
-      target_database_title: null
+      target_page_id: null,
+      target_page_title: null
     };
     this.settings.set(userId, created);
     return created;
@@ -371,12 +371,12 @@ export class InMemoryStore implements Store {
 
   async upsertSettings(input: {
     userId: string;
-    targetDatabaseId: string;
-    targetDatabaseTitle: string | null;
+    targetPageId: string;
+    targetPageTitle: string | null;
   }): Promise<UserSettings> {
     const settings = this.ensureSettings(input.userId);
-    settings.target_database_id = input.targetDatabaseId;
-    settings.target_database_title = input.targetDatabaseTitle;
+    settings.target_page_id = input.targetPageId;
+    settings.target_page_title = input.targetPageTitle;
     this.settings.set(settings.user_id, settings);
     return clone(settings);
   }
@@ -704,8 +704,8 @@ export class D1Store implements Store {
 
   async upsertSettings(input: {
     userId: string;
-    targetDatabaseId: string;
-    targetDatabaseTitle: string | null;
+    targetPageId: string;
+    targetPageTitle: string | null;
   }): Promise<UserSettings> {
     await this.ensureSettings(input.userId);
     await checkedRun(
@@ -713,7 +713,7 @@ export class D1Store implements Store {
       `UPDATE user_settings
        SET target_database_id = ?, target_database_title = ?, updated_at = ?
        WHERE user_id = ?`,
-      [input.targetDatabaseId, input.targetDatabaseTitle, nowIso(), input.userId]
+      [input.targetPageId, input.targetPageTitle, nowIso(), input.userId]
     );
     return this.getSettings(input.userId);
   }
@@ -722,7 +722,9 @@ export class D1Store implements Store {
     await this.ensureSettings(userId);
     const row = await checkedFirst<SettingsRow>(
       this.db,
-      `SELECT user_id, notion_connected, workspace_name, target_database_id, target_database_title
+      `SELECT user_id, notion_connected, workspace_name,
+              target_database_id AS target_page_id,
+              target_database_title AS target_page_title
        FROM user_settings WHERE user_id = ? LIMIT 1`,
       [userId]
     );
