@@ -5,5 +5,6 @@
 - `openapi.yaml`：后端 API 定义草案
 - `db_schema.sql`：D1 数据库结构草案
 - `product-tech-design.md`：MVP 产品/技术设计（含整体背景）
+- `admin-console-design.md`：管理后台与多用户 Notion 配置设计草案
 
 当 `backend/` 拆分为独立仓库后，可直接以本目录作为文档主入口。

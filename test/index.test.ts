@@ -141,6 +141,18 @@ describe("workers backend api", () => {
     expect(html).toContain("/openapi.yaml");
   });
 
+  it("serves console management page", async () => {
+    const app = createApp();
+    const ctx = new TestContext();
+
+    const response = await send(app, ctx, "/console", { method: "GET" });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toContain("text/html");
+    const html = await response.text();
+    expect(html).toContain("toNotion 管理后台（MVP）");
+    expect(html).toContain("/v1/me");
+  });
+
   it("returns 500 when DB binding is missing", async () => {
     const app = createApp();
     const ctx = new TestContext();
@@ -266,6 +278,148 @@ describe("workers backend api", () => {
       headers: { Authorization: `Bearer ${limitedToken}` }
     });
     expect(forbidden.status).toBe(403);
+  });
+
+  it("admin can create/list/update/delete users", async () => {
+    const app = createApp({ store: new InMemoryStore() });
+    const ctx = new TestContext();
+
+    const createUser = await sendJson(app, ctx, "/v1/admin/users", "POST", {
+      user_id: "user-c",
+      display_name: "User C",
+      role: "USER"
+    });
+    expect(createUser.status).toBe(201);
+    const createdPayload = await createUser.json() as {
+      user: { id: string; role: string; status: string };
+    };
+    expect(createdPayload.user.id).toBe("user-c");
+    expect(createdPayload.user.role).toBe("USER");
+    expect(createdPayload.user.status).toBe("ACTIVE");
+
+    const list = await send(app, ctx, "/v1/admin/users?status=ACTIVE", {
+      method: "GET",
+      headers: AUTH_HEADER
+    });
+    expect(list.status).toBe(200);
+    const listPayload = await list.json() as { users: Array<{ id: string }> };
+    expect(listPayload.users.some((user) => user.id === "user-c")).toBe(true);
+
+    const disable = await sendJson(app, ctx, "/v1/admin/users/user-c", "PATCH", {
+      status: "DISABLED"
+    });
+    expect(disable.status).toBe(200);
+    const disablePayload = await disable.json() as { user: { status: string } };
+    expect(disablePayload.user.status).toBe("DISABLED");
+
+    const remove = await send(app, ctx, "/v1/admin/users/user-c", {
+      method: "DELETE",
+      headers: AUTH_HEADER
+    });
+    expect(remove.status).toBe(200);
+    const removePayload = await remove.json() as { status: string };
+    expect(removePayload.status).toBe("DELETED");
+  });
+
+  it("supports /v1/me profile, token and notion settings endpoints", async () => {
+    const app = createApp({ store: new InMemoryStore() });
+    const ctx = new TestContext();
+    const envWithKey: Env = {
+      ...DEV_ENV,
+      CREDENTIALS_ENCRYPTION_KEY: "test-encryption-key"
+    };
+
+    const me = await send(app, ctx, "/v1/me", {
+      method: "GET",
+      headers: AUTH_HEADER
+    }, envWithKey);
+    expect(me.status).toBe(200);
+    const mePayload = await me.json() as { user: { id: string; role: string } };
+    expect(mePayload.user.id).toBe("demo-user");
+    expect(mePayload.user.role).toBe("SUPER_ADMIN");
+
+    const createToken = await sendJson(
+      app,
+      ctx,
+      "/v1/me/tokens",
+      "POST",
+      {
+        label: "self-test",
+        scopes: ["items:read"]
+      },
+      true,
+      envWithKey
+    );
+    expect(createToken.status).toBe(201);
+    const createTokenPayload = await createToken.json() as {
+      token: string;
+      token_record: { id: string; user_id: string };
+    };
+    expect(createTokenPayload.token).toBeTruthy();
+    expect(createTokenPayload.token_record.user_id).toBe("demo-user");
+
+    const listTokens = await send(app, ctx, "/v1/me/tokens", {
+      method: "GET",
+      headers: AUTH_HEADER
+    }, envWithKey);
+    expect(listTokens.status).toBe(200);
+    const listTokensPayload = await listTokens.json() as { tokens: Array<{ id: string }> };
+    expect(listTokensPayload.tokens.length).toBe(1);
+
+    const revokeToken = await send(
+      app,
+      ctx,
+      `/v1/me/tokens/${createTokenPayload.token_record.id}/revoke`,
+      {
+        method: "POST",
+        headers: AUTH_HEADER
+      },
+      envWithKey
+    );
+    expect(revokeToken.status).toBe(200);
+
+    const putCredential = await sendJson(
+      app,
+      ctx,
+      "/v1/me/notion-credentials",
+      "PUT",
+      {
+        notion_api_token: "ntn_test_token_123456",
+        notion_api_version: "2022-06-28",
+        notion_api_base_url: "https://api.notion.com/v1"
+      },
+      true,
+      envWithKey
+    );
+    expect(putCredential.status).toBe(200);
+    const putCredentialPayload = await putCredential.json() as {
+      configured: boolean;
+      credential: { token_hint: string | null };
+    };
+    expect(putCredentialPayload.configured).toBe(true);
+    expect(putCredentialPayload.credential.token_hint).toBe("123456");
+
+    const getCredential = await send(app, ctx, "/v1/me/notion-credentials", {
+      method: "GET",
+      headers: AUTH_HEADER
+    }, envWithKey);
+    expect(getCredential.status).toBe(200);
+    const getCredentialPayload = await getCredential.json() as { configured: boolean };
+    expect(getCredentialPayload.configured).toBe(true);
+
+    const setTarget = await sendJson(
+      app,
+      ctx,
+      "/v1/me/notion-target",
+      "PUT",
+      {
+        page_id: "30db8736e20380c2bcb2f33e5c776c36",
+        page_title: "Me Target"
+      },
+      true,
+      envWithKey
+    );
+    expect(setTarget.status).toBe(200);
   });
 
   it("ingest -> synced happy path", async () => {

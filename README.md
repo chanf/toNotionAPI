@@ -34,11 +34,13 @@ git status
 - `docs/openapi.yaml`：后端 API 草案
 - `docs/db_schema.sql`：D1 表结构草案
 - `docs/product-tech-design.md`：MVP 产品/技术设计（含上下文）
+- `docs/admin-console-design.md`：多用户与管理后台设计文档
 
 ## 功能范围（当前）
 
 - `GET /healthz`
 - `GET /docs`（Swagger UI 在线文档）
+- `GET /console`（管理后台 MVP 页面）
 - `GET /openapi.yaml`（OpenAPI 规范）
 - `POST /v1/ingest`
 - `GET /v1/items`
@@ -47,6 +49,18 @@ git status
 - `GET /v1/auth/notion/start`
 - `GET /v1/auth/notion/callback`
 - `PUT /v1/settings/notion-target`
+- `GET /v1/me`
+- `GET /v1/me/tokens`
+- `POST /v1/me/tokens`
+- `POST /v1/me/tokens/{tokenId}/revoke`
+- `GET /v1/me/notion-credentials`
+- `PUT /v1/me/notion-credentials`
+- `DELETE /v1/me/notion-credentials`
+- `PUT /v1/me/notion-target`
+- `POST /v1/admin/users`
+- `GET /v1/admin/users`
+- `PATCH /v1/admin/users/{userId}`
+- `DELETE /v1/admin/users/{userId}`
 - `POST /v1/admin/tokens`（管理员：创建 token）
 - `GET /v1/admin/tokens`（管理员：查询 token）
 - `POST /v1/admin/tokens/{tokenId}/revoke`（管理员：吊销 token）
@@ -128,6 +142,7 @@ MVP 现支持两种模式：
 - `NOTION_API_TOKEN`：Notion Integration Token（真实模式必填，建议用 `wrangler secret`）。
 - `NOTION_API_VERSION`：默认 `2022-06-28`。
 - `NOTION_API_BASE_URL`：默认 `https://api.notion.com/v1`。
+- `CREDENTIALS_ENCRYPTION_KEY`：用于加密存储用户级 `NOTION_API_TOKEN`（启用 `/v1/me/notion-credentials` 必填，建议配置为 secret）。
 - `LOG_LEVEL`：日志级别，支持 `debug/info/warn/error`，默认 `info`。
 
 本地真实联调示例：
@@ -252,6 +267,24 @@ http://127.0.0.1:4173
 - 页面只需要输入公众号 URL，点击提交后会调用 `/v1/ingest` 并轮询到最终状态。
 - 默认端口为 `4173`，可通过 `WEB_TOOL_PORT` 覆盖。
 - 若未设置 `WEB_TOOL_API_BASE_URL`，默认使用 `https://tonotion.iiioiii.xin`。
+
+## 管理后台（/console）
+
+服务内置了一个最小管理后台页面，便于手工管理用户、Token、Notion 凭证与目标页。
+
+- 访问地址：`/console`（例如 `https://tonotion.iiioiii.xin/console`）
+- 登录方式：输入任意有效 API Token（`Authorization: Bearer <token>`）
+- 普通用户能力：
+  - 查看 `/v1/me` 资料
+  - 管理自己的 `/v1/me/tokens*`
+  - 管理自己的 `/v1/me/notion-credentials` 与 `/v1/me/notion-target`
+- 超管额外能力：
+  - 管理 `/v1/admin/users*`（创建/查询/更新/删除用户）
+
+注意：
+
+- 若要保存“用户级 Notion 凭证”，必须配置 `CREDENTIALS_ENCRYPTION_KEY`，否则接口会返回 `CONFIG_MISSING`。
+- `/console` 仅为 MVP 管理入口，生产环境建议结合 Access / Zero Trust 做额外访问控制。
 
 ### CLI 线上链路测试（可选）
 

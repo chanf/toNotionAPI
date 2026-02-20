@@ -1,10 +1,14 @@
 import type { D1Database } from "./d1";
 import type {
+  AppUser,
+  AppUserRole,
+  AppUserStatus,
   ApiAccessToken,
   ArticleItem,
   ItemStatus,
   OAuthState,
   SyncError,
+  UserNotionCredential,
   UserSettings
 } from "./types";
 import { normalizeUrl, nowIso, randomId, sha256Hex } from "./utils";
@@ -57,6 +61,28 @@ type AccessTokenRow = {
   is_active: number;
   expires_at: string | null;
   last_used_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+type AppUserRow = {
+  id: string;
+  display_name: string | null;
+  role: AppUserRole;
+  status: AppUserStatus;
+  created_at: string;
+  updated_at: string;
+  deleted_at: string | null;
+};
+
+type UserNotionCredentialRow = {
+  user_id: string;
+  token_ciphertext: string;
+  token_iv: string;
+  token_tag: string;
+  token_hint: string | null;
+  api_version: string;
+  api_base_url: string;
   created_at: string;
   updated_at: string;
 };
@@ -143,6 +169,29 @@ function rowToAccessToken(row: AccessTokenRow): ApiAccessToken {
   };
 }
 
+function rowToAppUser(row: AppUserRow): AppUser {
+  return {
+    id: row.id,
+    display_name: row.display_name,
+    role: row.role,
+    status: row.status,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+    deleted_at: row.deleted_at
+  };
+}
+
+function rowToUserNotionCredential(row: UserNotionCredentialRow): UserNotionCredential {
+  return {
+    user_id: row.user_id,
+    token_hint: row.token_hint,
+    api_version: row.api_version,
+    api_base_url: row.api_base_url,
+    created_at: row.created_at,
+    updated_at: row.updated_at
+  };
+}
+
 async function checkedRun(db: D1Database, query: string, params: unknown[] = []): Promise<void> {
   const result = await db.prepare(query).bind(...params).run();
   if (!result.success) {
@@ -167,6 +216,19 @@ async function checkedAll<T>(db: D1Database, query: string, params: unknown[] = 
 }
 
 export interface Store {
+  ensureUser(input: {
+    userId: string;
+    role?: AppUserRole;
+    displayName?: string | null;
+  }): Promise<AppUser>;
+  getUser(userId: string): Promise<AppUser | null>;
+  listUsers(input?: { status?: AppUserStatus | null }): Promise<AppUser[]>;
+  updateUser(input: {
+    userId: string;
+    status?: AppUserStatus;
+    displayName?: string | null;
+  }): Promise<AppUser | null>;
+  deleteUser(userId: string): Promise<boolean>;
   ingestItem(input: {
     userId: string;
     clientItemId: string;
@@ -208,6 +270,17 @@ export interface Store {
     expiresAt: string;
   }): Promise<OAuthState>;
   consumeOAuthState(input: { state: string; now: string }): Promise<OAuthState | null>;
+  upsertUserNotionCredential(input: {
+    userId: string;
+    tokenCiphertext: string;
+    tokenIv: string;
+    tokenTag: string;
+    tokenHint: string | null;
+    apiVersion: string;
+    apiBaseUrl: string;
+  }): Promise<UserNotionCredential>;
+  getUserNotionCredential(userId: string): Promise<UserNotionCredential | null>;
+  deleteUserNotionCredential(userId: string): Promise<boolean>;
   issueAccessToken(input: {
     userId: string;
     label: string | null;
@@ -219,16 +292,22 @@ export interface Store {
     isActive?: boolean | null;
   }): Promise<ApiAccessToken[]>;
   revokeAccessToken(input: { tokenId: string }): Promise<boolean>;
+  getAccessTokenById(tokenId: string): Promise<ApiAccessToken | null>;
   getAccessTokenByHash(tokenHash: string): Promise<ApiAccessToken | null>;
   touchAccessToken(tokenId: string, atIso: string): Promise<void>;
 }
 
 export class InMemoryStore implements Store {
+  private users = new Map<string, AppUser>();
   private items = new Map<string, ArticleItem>();
   private userItemIds = new Map<string, string[]>();
   private urlIndex = new Map<string, string>();
   private settings = new Map<string, UserSettings>();
   private oauthStates = new Map<string, OAuthState>();
+  private userNotionCredentials = new Map<
+    string,
+    UserNotionCredentialRow
+  >();
   private accessTokens = new Map<string, ApiAccessToken>();
   private tokenHashIndex = new Map<string, string>();
 
@@ -250,6 +329,86 @@ export class InMemoryStore implements Store {
     };
     this.settings.set(userId, created);
     return created;
+  }
+
+  async ensureUser(input: {
+    userId: string;
+    role?: AppUserRole;
+    displayName?: string | null;
+  }): Promise<AppUser> {
+    const existing = this.users.get(input.userId);
+    if (existing) {
+      return clone(existing);
+    }
+    const now = nowIso();
+    const created: AppUser = {
+      id: input.userId,
+      display_name: input.displayName ?? null,
+      role: input.role ?? "USER",
+      status: "ACTIVE",
+      created_at: now,
+      updated_at: now,
+      deleted_at: null
+    };
+    this.users.set(created.id, created);
+    return clone(created);
+  }
+
+  async getUser(userId: string): Promise<AppUser | null> {
+    const user = this.users.get(userId);
+    return user ? clone(user) : null;
+  }
+
+  async listUsers(input?: { status?: AppUserStatus | null }): Promise<AppUser[]> {
+    let users = [...this.users.values()];
+    if (input?.status) {
+      users = users.filter((user) => user.status === input.status);
+    }
+    users.sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at));
+    return users.map(clone);
+  }
+
+  async updateUser(input: {
+    userId: string;
+    status?: AppUserStatus;
+    displayName?: string | null;
+  }): Promise<AppUser | null> {
+    const user = this.users.get(input.userId);
+    if (!user) {
+      return null;
+    }
+    if (input.status) {
+      user.status = input.status;
+      user.deleted_at = input.status === "DELETED" ? nowIso() : null;
+    }
+    if ("displayName" in input) {
+      user.display_name = input.displayName ?? null;
+    }
+    user.updated_at = nowIso();
+    this.users.set(user.id, user);
+    return clone(user);
+  }
+
+  async deleteUser(userId: string): Promise<boolean> {
+    const user = this.users.get(userId);
+    if (!user) {
+      return false;
+    }
+    user.status = "DELETED";
+    user.deleted_at = nowIso();
+    user.updated_at = nowIso();
+    this.users.set(user.id, user);
+
+    this.userNotionCredentials.delete(userId);
+    for (const token of this.accessTokens.values()) {
+      if (token.user_id !== userId) {
+        continue;
+      }
+      token.is_active = false;
+      token.updated_at = nowIso();
+      this.accessTokens.set(token.id, token);
+    }
+    return true;
   }
 
   async ingestItem(input: {
@@ -374,6 +533,7 @@ export class InMemoryStore implements Store {
     targetPageId: string;
     targetPageTitle: string | null;
   }): Promise<UserSettings> {
+    await this.ensureUser({ userId: input.userId });
     const settings = this.ensureSettings(input.userId);
     settings.target_page_id = input.targetPageId;
     settings.target_page_title = input.targetPageTitle;
@@ -389,6 +549,7 @@ export class InMemoryStore implements Store {
     userId: string;
     workspaceName: string;
   }): Promise<UserSettings> {
+    await this.ensureUser({ userId: input.userId });
     const settings = this.ensureSettings(input.userId);
     settings.notion_connected = true;
     settings.workspace_name = input.workspaceName;
@@ -422,12 +583,49 @@ export class InMemoryStore implements Store {
     return clone(record);
   }
 
+  async upsertUserNotionCredential(input: {
+    userId: string;
+    tokenCiphertext: string;
+    tokenIv: string;
+    tokenTag: string;
+    tokenHint: string | null;
+    apiVersion: string;
+    apiBaseUrl: string;
+  }): Promise<UserNotionCredential> {
+    await this.ensureUser({ userId: input.userId });
+    const existing = this.userNotionCredentials.get(input.userId);
+    const now = nowIso();
+    const row: UserNotionCredentialRow = {
+      user_id: input.userId,
+      token_ciphertext: input.tokenCiphertext,
+      token_iv: input.tokenIv,
+      token_tag: input.tokenTag,
+      token_hint: input.tokenHint,
+      api_version: input.apiVersion,
+      api_base_url: input.apiBaseUrl,
+      created_at: existing?.created_at ?? now,
+      updated_at: now
+    };
+    this.userNotionCredentials.set(input.userId, row);
+    return rowToUserNotionCredential(row);
+  }
+
+  async getUserNotionCredential(userId: string): Promise<UserNotionCredential | null> {
+    const row = this.userNotionCredentials.get(userId);
+    return row ? rowToUserNotionCredential(row) : null;
+  }
+
+  async deleteUserNotionCredential(userId: string): Promise<boolean> {
+    return this.userNotionCredentials.delete(userId);
+  }
+
   async issueAccessToken(input: {
     userId: string;
     label: string | null;
     scopes: string[];
     expiresAt: string | null;
   }): Promise<{ plainToken: string; token: ApiAccessToken }> {
+    await this.ensureUser({ userId: input.userId });
     const plainToken = `wx2n_${randomId().replaceAll("-", "")}`;
     const tokenHash = await sha256Hex(plainToken);
     const now = nowIso();
@@ -474,6 +672,11 @@ export class InMemoryStore implements Store {
     return true;
   }
 
+  async getAccessTokenById(tokenId: string): Promise<ApiAccessToken | null> {
+    const token = this.accessTokens.get(tokenId);
+    return token ? clone(token) : null;
+  }
+
   async getAccessTokenByHash(tokenHash: string): Promise<ApiAccessToken | null> {
     const tokenId = this.tokenHashIndex.get(tokenHash);
     if (!tokenId) {
@@ -496,6 +699,119 @@ export class InMemoryStore implements Store {
 
 export class D1Store implements Store {
   constructor(private readonly db: D1Database) {}
+
+  async ensureUser(input: {
+    userId: string;
+    role?: AppUserRole;
+    displayName?: string | null;
+  }): Promise<AppUser> {
+    const now = nowIso();
+    await checkedRun(
+      this.db,
+      `INSERT INTO app_users (id, display_name, role, status, created_at, updated_at, deleted_at)
+       VALUES (?, ?, ?, 'ACTIVE', ?, ?, NULL)
+       ON CONFLICT(id) DO NOTHING`,
+      [input.userId, input.displayName ?? null, input.role ?? "USER", now, now]
+    );
+    const user = await this.getUser(input.userId);
+    if (!user) {
+      throw new Error("Failed to ensure app user.");
+    }
+    return user;
+  }
+
+  async getUser(userId: string): Promise<AppUser | null> {
+    const row = await checkedFirst<AppUserRow>(
+      this.db,
+      `SELECT id, display_name, role, status, created_at, updated_at, deleted_at
+       FROM app_users
+       WHERE id = ?
+       LIMIT 1`,
+      [userId]
+    );
+    return row ? rowToAppUser(row) : null;
+  }
+
+  async listUsers(input?: { status?: AppUserStatus | null }): Promise<AppUser[]> {
+    const params: unknown[] = [];
+    let whereClause = "";
+    if (input?.status) {
+      whereClause = "WHERE status = ?";
+      params.push(input.status);
+    }
+    const rows = await checkedAll<AppUserRow>(
+      this.db,
+      `SELECT id, display_name, role, status, created_at, updated_at, deleted_at
+       FROM app_users
+       ${whereClause}
+       ORDER BY created_at DESC`,
+      params
+    );
+    return rows.map(rowToAppUser);
+  }
+
+  async updateUser(input: {
+    userId: string;
+    status?: AppUserStatus;
+    displayName?: string | null;
+  }): Promise<AppUser | null> {
+    const current = await this.getUser(input.userId);
+    if (!current) {
+      return null;
+    }
+
+    const clauses: string[] = [];
+    const params: unknown[] = [];
+    if ("displayName" in input) {
+      clauses.push("display_name = ?");
+      params.push(input.displayName ?? null);
+    }
+    if (input.status) {
+      clauses.push("status = ?");
+      params.push(input.status);
+      clauses.push("deleted_at = ?");
+      params.push(input.status === "DELETED" ? nowIso() : null);
+    }
+    if (clauses.length === 0) {
+      return current;
+    }
+
+    clauses.push("updated_at = ?");
+    params.push(nowIso());
+    params.push(input.userId);
+    await checkedRun(
+      this.db,
+      `UPDATE app_users
+       SET ${clauses.join(", ")}
+       WHERE id = ?`,
+      params
+    );
+    return this.getUser(input.userId);
+  }
+
+  async deleteUser(userId: string): Promise<boolean> {
+    const existing = await this.getUser(userId);
+    if (!existing) {
+      return false;
+    }
+    const now = nowIso();
+    await checkedRun(
+      this.db,
+      `UPDATE app_users
+       SET status = 'DELETED', deleted_at = ?, updated_at = ?
+       WHERE id = ?`,
+      [now, now, userId]
+    );
+    await checkedRun(
+      this.db,
+      `UPDATE api_access_tokens
+       SET is_active = 0, updated_at = ?
+       WHERE user_id = ?`,
+      [now, userId]
+    );
+    await checkedRun(this.db, `DELETE FROM user_notion_credentials WHERE user_id = ?`, [userId]);
+    return true;
+  }
 
   private async getItemByNormalizedUrl(
     userId: string,
@@ -707,6 +1023,7 @@ export class D1Store implements Store {
     targetPageId: string;
     targetPageTitle: string | null;
   }): Promise<UserSettings> {
+    await this.ensureUser({ userId: input.userId });
     await this.ensureSettings(input.userId);
     await checkedRun(
       this.db,
@@ -738,6 +1055,7 @@ export class D1Store implements Store {
     userId: string;
     workspaceName: string;
   }): Promise<UserSettings> {
+    await this.ensureUser({ userId: input.userId });
     await this.ensureSettings(input.userId);
     await checkedRun(
       this.db,
@@ -788,12 +1106,81 @@ export class D1Store implements Store {
     return row;
   }
 
+  async upsertUserNotionCredential(input: {
+    userId: string;
+    tokenCiphertext: string;
+    tokenIv: string;
+    tokenTag: string;
+    tokenHint: string | null;
+    apiVersion: string;
+    apiBaseUrl: string;
+  }): Promise<UserNotionCredential> {
+    await this.ensureUser({ userId: input.userId });
+    const now = nowIso();
+    await checkedRun(
+      this.db,
+      `INSERT INTO user_notion_credentials (
+        user_id, token_ciphertext, token_iv, token_tag, token_hint, api_version, api_base_url, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(user_id) DO UPDATE SET
+        token_ciphertext = excluded.token_ciphertext,
+        token_iv = excluded.token_iv,
+        token_tag = excluded.token_tag,
+        token_hint = excluded.token_hint,
+        api_version = excluded.api_version,
+        api_base_url = excluded.api_base_url,
+        updated_at = excluded.updated_at`,
+      [
+        input.userId,
+        input.tokenCiphertext,
+        input.tokenIv,
+        input.tokenTag,
+        input.tokenHint,
+        input.apiVersion,
+        input.apiBaseUrl,
+        now,
+        now
+      ]
+    );
+    const credential = await this.getUserNotionCredential(input.userId);
+    if (!credential) {
+      throw new Error("Failed to upsert user Notion credential.");
+    }
+    return credential;
+  }
+
+  async getUserNotionCredential(userId: string): Promise<UserNotionCredential | null> {
+    const row = await checkedFirst<UserNotionCredentialRow>(
+      this.db,
+      `SELECT user_id, token_ciphertext, token_iv, token_tag, token_hint, api_version, api_base_url, created_at, updated_at
+       FROM user_notion_credentials
+       WHERE user_id = ?
+       LIMIT 1`,
+      [userId]
+    );
+    return row ? rowToUserNotionCredential(row) : null;
+  }
+
+  async deleteUserNotionCredential(userId: string): Promise<boolean> {
+    const existing = await checkedFirst<{ user_id: string }>(
+      this.db,
+      `SELECT user_id FROM user_notion_credentials WHERE user_id = ? LIMIT 1`,
+      [userId]
+    );
+    if (!existing) {
+      return false;
+    }
+    await checkedRun(this.db, `DELETE FROM user_notion_credentials WHERE user_id = ?`, [userId]);
+    return true;
+  }
+
   async issueAccessToken(input: {
     userId: string;
     label: string | null;
     scopes: string[];
     expiresAt: string | null;
   }): Promise<{ plainToken: string; token: ApiAccessToken }> {
+    await this.ensureUser({ userId: input.userId });
     const plainToken = `wx2n_${randomId().replaceAll("-", "")}`;
     const tokenHash = await sha256Hex(plainToken);
     const now = nowIso();
@@ -879,6 +1266,18 @@ export class D1Store implements Store {
       [nowIso(), input.tokenId]
     );
     return true;
+  }
+
+  async getAccessTokenById(tokenId: string): Promise<ApiAccessToken | null> {
+    const row = await checkedFirst<AccessTokenRow>(
+      this.db,
+      `SELECT id, user_id, token_hash, label, scopes, is_active, expires_at, last_used_at, created_at, updated_at
+       FROM api_access_tokens
+       WHERE id = ?
+       LIMIT 1`,
+      [tokenId]
+    );
+    return row ? rowToAccessToken(row) : null;
   }
 
   async getAccessTokenByHash(tokenHash: string): Promise<ApiAccessToken | null> {

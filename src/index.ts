@@ -3,8 +3,8 @@ import { createLogger, serializeError, type Logger } from "./logger";
 import { OPENAPI_YAML } from "./openapi";
 import { processItem, type NotionRuntimeInput } from "./pipeline";
 import { D1Store, type Store } from "./store";
-import type { ApiAccessToken, IngestRequest, ItemStatus } from "./types";
-import { ITEM_STATUSES } from "./types";
+import type { ApiAccessToken, AppUserRole, AppUserStatus, IngestRequest, ItemStatus } from "./types";
+import { APP_USER_ROLES, APP_USER_STATUSES, ITEM_STATUSES } from "./types";
 import { errorResponse, jsonResponse, nowIso, parseBearerToken, randomId, sha256Hex } from "./utils";
 
 export interface Env {
@@ -12,6 +12,7 @@ export interface Env {
   NOTION_API_TOKEN?: string;
   NOTION_API_VERSION?: string;
   NOTION_API_BASE_URL?: string;
+  CREDENTIALS_ENCRYPTION_KEY?: string;
   NOTION_MOCK?: string;
   LOG_LEVEL?: string;
   DB?: D1Database;
@@ -40,6 +41,22 @@ function hasTokenScope(scopes: string[], requiredScope: string): boolean {
   return scopes.includes("*") || scopes.includes(requiredScope);
 }
 
+function isAppUserRole(value: string): value is AppUserRole {
+  return (APP_USER_ROLES as readonly string[]).includes(value);
+}
+
+function isAppUserStatus(value: string): value is AppUserStatus {
+  return (APP_USER_STATUSES as readonly string[]).includes(value);
+}
+
+function canManageUsers(scopes: string[]): boolean {
+  return hasTokenScope(scopes, "admin:users") || hasTokenScope(scopes, "admin:tokens");
+}
+
+function containsPrivilegedScope(scopes: string[]): boolean {
+  return scopes.some((scope) => scope === "*" || scope.startsWith("admin:"));
+}
+
 function parseScopesInput(raw: unknown): string[] {
   if (Array.isArray(raw)) {
     return raw.filter((v): v is string => typeof v === "string").map((v) => v.trim()).filter(Boolean);
@@ -64,6 +81,65 @@ function parseBooleanInput(raw: string | null): boolean | null {
     return false;
   }
   return null;
+}
+
+function normalizeApiBaseUrl(raw: string | null | undefined): string {
+  if (!raw) {
+    return "https://api.notion.com/v1";
+  }
+  return raw.trim().replace(/\/+$/, "");
+}
+
+function bytesToBase64(bytes: Uint8Array): string {
+  const maybeBuffer = (globalThis as unknown as {
+    Buffer?: { from(data: Uint8Array): { toString(encoding: string): string } };
+  }).Buffer;
+  if (maybeBuffer) {
+    return maybeBuffer.from(bytes).toString("base64");
+  }
+  let binary = "";
+  for (const byte of bytes) {
+    binary += String.fromCharCode(byte);
+  }
+  return btoa(binary);
+}
+
+async function encryptSecret(plain: string, rawKey: string): Promise<{
+  tokenCiphertext: string;
+  tokenIv: string;
+  tokenTag: string;
+}> {
+  if (!globalThis.crypto?.subtle) {
+    throw new Error("WebCrypto API is unavailable.");
+  }
+  const encodedKey = new TextEncoder().encode(rawKey);
+  const keyDigest = await globalThis.crypto.subtle.digest("SHA-256", encodedKey);
+  const cryptoKey = await globalThis.crypto.subtle.importKey(
+    "raw",
+    keyDigest,
+    { name: "AES-GCM" },
+    false,
+    ["encrypt"]
+  );
+  const iv = globalThis.crypto.getRandomValues(new Uint8Array(12));
+  const cipher = await globalThis.crypto.subtle.encrypt(
+    {
+      name: "AES-GCM",
+      iv
+    },
+    cryptoKey,
+    new TextEncoder().encode(plain)
+  );
+  const cipherBytes = new Uint8Array(cipher);
+  const tagLength = 16;
+  if (cipherBytes.length <= tagLength) {
+    throw new Error("Ciphertext is unexpectedly short.");
+  }
+  return {
+    tokenCiphertext: bytesToBase64(cipherBytes.slice(0, -tagLength)),
+    tokenIv: bytesToBase64(iv),
+    tokenTag: bytesToBase64(cipherBytes.slice(-tagLength))
+  };
 }
 
 function parseEnvBoolean(raw: string | undefined): boolean {
@@ -166,6 +242,433 @@ function buildSwaggerUiHtml(specUrl: string): string {
           layout: "BaseLayout"
         });
       });
+    </script>
+  </body>
+</html>`;
+}
+
+function buildConsoleHtml(): string {
+  return `<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>toNotion 管理后台（MVP）</title>
+    <style>
+      :root {
+        --bg: #f4efe8;
+        --panel: #fffdf9;
+        --line: #d8cec1;
+        --text: #1e1b17;
+        --muted: #6f6356;
+        --accent: #2f6f53;
+        --accent-2: #7a3d2e;
+        --danger: #a32727;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        background: linear-gradient(135deg, #f8f3eb 0%, #efe6d9 100%);
+        color: var(--text);
+        font-family: "IBM Plex Sans", "PingFang SC", "Helvetica Neue", sans-serif;
+      }
+      .wrap {
+        width: min(1100px, 96%);
+        margin: 24px auto;
+      }
+      h1 {
+        margin: 0 0 10px 0;
+        font-size: 30px;
+        letter-spacing: 0.3px;
+      }
+      .hint {
+        margin: 0 0 16px 0;
+        color: var(--muted);
+        font-size: 14px;
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: 1fr;
+        gap: 14px;
+      }
+      .card {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        padding: 14px;
+      }
+      .card h2 {
+        margin: 0 0 10px 0;
+        font-size: 18px;
+      }
+      .row {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+        margin: 8px 0;
+      }
+      .col {
+        display: grid;
+        gap: 8px;
+      }
+      input, select, textarea, button {
+        border-radius: 8px;
+        border: 1px solid var(--line);
+        padding: 9px 10px;
+        font-size: 14px;
+      }
+      textarea {
+        min-height: 120px;
+        width: 100%;
+      }
+      button {
+        cursor: pointer;
+        background: white;
+      }
+      button.primary {
+        background: var(--accent);
+        color: white;
+        border-color: var(--accent);
+      }
+      button.warn {
+        background: var(--accent-2);
+        color: white;
+        border-color: var(--accent-2);
+      }
+      button.danger {
+        background: var(--danger);
+        color: white;
+        border-color: var(--danger);
+      }
+      .status {
+        font-size: 13px;
+        color: var(--muted);
+      }
+      .chip {
+        display: inline-block;
+        padding: 2px 8px;
+        border-radius: 999px;
+        border: 1px solid var(--line);
+        font-size: 12px;
+        margin-right: 6px;
+      }
+      pre {
+        margin: 0;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 10px;
+        background: #fff;
+        max-height: 260px;
+        overflow: auto;
+        font-size: 12px;
+      }
+      #adminPanel {
+        display: none;
+      }
+      @media (min-width: 980px) {
+        .grid {
+          grid-template-columns: 1fr 1fr;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <h1>toNotion 管理后台（MVP）</h1>
+      <p class="hint">使用 API Token 登录。普通用户可管理自己的 token 与 Notion 配置；超管额外支持用户管理。</p>
+
+      <div class="card">
+        <h2>登录</h2>
+        <div class="row">
+          <input id="tokenInput" style="flex:1; min-width:280px;" placeholder="Bearer Token，例如 wx2n_..." />
+          <button id="saveTokenBtn" class="primary">保存并加载</button>
+          <button id="clearTokenBtn">清空</button>
+        </div>
+        <div class="status" id="loginStatus">未登录</div>
+      </div>
+
+      <div class="grid">
+        <div class="card">
+          <h2>我的信息与目标页</h2>
+          <div id="meProfile" class="status">尚未加载</div>
+          <div class="row">
+            <input id="pageIdInput" placeholder="Notion page_id" style="flex:1; min-width:220px;" />
+            <input id="pageTitleInput" placeholder="page_title（可选）" style="flex:1; min-width:180px;" />
+            <button id="saveTargetBtn" class="primary">保存目标页</button>
+          </div>
+          <h2>我的 Notion 凭证</h2>
+          <div class="row">
+            <input id="notionTokenInput" type="password" placeholder="NOTION_API_TOKEN" style="flex:1; min-width:220px;" />
+          </div>
+          <div class="row">
+            <input id="notionVersionInput" value="2022-06-28" placeholder="NOTION_API_VERSION" />
+            <input id="notionBaseUrlInput" value="https://api.notion.com/v1" placeholder="NOTION_API_BASE_URL" style="flex:1; min-width:200px;" />
+          </div>
+          <div class="row">
+            <button id="saveNotionBtn" class="primary">保存 Notion 凭证</button>
+            <button id="deleteNotionBtn" class="danger">删除 Notion 凭证</button>
+            <button id="refreshNotionBtn">刷新状态</button>
+          </div>
+          <pre id="notionResult">暂无结果</pre>
+        </div>
+
+        <div class="card">
+          <h2>我的 API Token</h2>
+          <div class="row">
+            <input id="tokenLabelInput" placeholder="label（可选）" />
+            <input id="tokenScopesInput" value="items:read,items:write" placeholder="scopes，逗号分隔" style="flex:1; min-width:180px;" />
+          </div>
+          <div class="row">
+            <input id="tokenExpiresInput" placeholder="expires_at（ISO，可选）" style="flex:1; min-width:220px;" />
+            <button id="createSelfTokenBtn" class="primary">创建我的 token</button>
+            <button id="listSelfTokenBtn">刷新列表</button>
+          </div>
+          <pre id="selfTokenResult">暂无结果</pre>
+        </div>
+      </div>
+
+      <div class="card" id="adminPanel">
+        <h2>超管：用户管理</h2>
+        <div class="row">
+          <input id="newUserIdInput" placeholder="user_id" />
+          <input id="newUserNameInput" placeholder="display_name（可选）" />
+          <select id="newUserRoleSelect">
+            <option value="USER">USER</option>
+            <option value="SUPER_ADMIN">SUPER_ADMIN</option>
+          </select>
+          <button id="createUserBtn" class="primary">创建用户</button>
+        </div>
+        <div class="row">
+          <select id="userStatusFilter">
+            <option value="">全部状态</option>
+            <option value="ACTIVE">ACTIVE</option>
+            <option value="DISABLED">DISABLED</option>
+            <option value="DELETED">DELETED</option>
+          </select>
+          <button id="listUsersBtn">刷新用户列表</button>
+        </div>
+        <pre id="adminUsersResult">暂无结果</pre>
+      </div>
+    </div>
+
+    <script>
+      const TOKEN_KEY = "tonotion_console_token";
+
+      const loginStatusEl = document.getElementById("loginStatus");
+      const meProfileEl = document.getElementById("meProfile");
+      const adminPanelEl = document.getElementById("adminPanel");
+      const tokenInputEl = document.getElementById("tokenInput");
+      const selfTokenResultEl = document.getElementById("selfTokenResult");
+      const notionResultEl = document.getElementById("notionResult");
+      const adminUsersResultEl = document.getElementById("adminUsersResult");
+
+      function getToken() {
+        return (tokenInputEl.value || "").trim();
+      }
+
+      function setStatus(text) {
+        loginStatusEl.textContent = text;
+      }
+
+      function pretty(data) {
+        return JSON.stringify(data, null, 2);
+      }
+
+      async function api(path, init) {
+        const token = getToken();
+        if (!token) {
+          throw new Error("请先输入 token");
+        }
+        const headers = Object.assign(
+          { authorization: "Bearer " + token },
+          (init && init.headers) || {}
+        );
+        const resp = await fetch(path, Object.assign({}, init || {}, { headers }));
+        const text = await resp.text();
+        let body = null;
+        try {
+          body = text ? JSON.parse(text) : null;
+        } catch {
+          body = text;
+        }
+        return { resp, body };
+      }
+
+      async function loadProfile() {
+        try {
+          const { resp, body } = await api("/v1/me", { method: "GET" });
+          if (!resp.ok) {
+            meProfileEl.textContent = "加载失败: " + pretty(body);
+            adminPanelEl.style.display = "none";
+            return;
+          }
+          const user = body.user || {};
+          const isAdmin = Boolean(body.is_admin);
+          const chips = [
+            "<span class='chip'>id: " + (user.id || "-") + "</span>",
+            "<span class='chip'>role: " + (user.role || "-") + "</span>",
+            "<span class='chip'>status: " + (user.status || "-") + "</span>"
+          ];
+          meProfileEl.innerHTML = chips.join("");
+          adminPanelEl.style.display = isAdmin ? "block" : "none";
+          setStatus("登录成功（" + (isAdmin ? "超管" : "普通用户") + "）");
+        } catch (error) {
+          meProfileEl.textContent = "加载失败: " + String(error);
+          adminPanelEl.style.display = "none";
+        }
+      }
+
+      async function refreshSelfTokens() {
+        try {
+          const { resp, body } = await api("/v1/me/tokens", { method: "GET" });
+          selfTokenResultEl.textContent = pretty({ status: resp.status, body });
+        } catch (error) {
+          selfTokenResultEl.textContent = String(error);
+        }
+      }
+
+      async function refreshNotionCredential() {
+        try {
+          const { resp, body } = await api("/v1/me/notion-credentials", { method: "GET" });
+          notionResultEl.textContent = pretty({ status: resp.status, body });
+        } catch (error) {
+          notionResultEl.textContent = String(error);
+        }
+      }
+
+      async function refreshUsers() {
+        const filter = document.getElementById("userStatusFilter").value;
+        const query = filter ? ("?status=" + encodeURIComponent(filter)) : "";
+        try {
+          const { resp, body } = await api("/v1/admin/users" + query, { method: "GET" });
+          adminUsersResultEl.textContent = pretty({ status: resp.status, body });
+        } catch (error) {
+          adminUsersResultEl.textContent = String(error);
+        }
+      }
+
+      document.getElementById("saveTokenBtn").addEventListener("click", async () => {
+        const token = getToken();
+        if (!token) {
+          setStatus("token 不能为空");
+          return;
+        }
+        localStorage.setItem(TOKEN_KEY, token);
+        await loadProfile();
+        await refreshSelfTokens();
+        await refreshNotionCredential();
+      });
+
+      document.getElementById("clearTokenBtn").addEventListener("click", () => {
+        localStorage.removeItem(TOKEN_KEY);
+        tokenInputEl.value = "";
+        setStatus("已清空 token");
+        meProfileEl.textContent = "尚未加载";
+        adminPanelEl.style.display = "none";
+      });
+
+      document.getElementById("saveTargetBtn").addEventListener("click", async () => {
+        const pageId = (document.getElementById("pageIdInput").value || "").trim();
+        const pageTitle = (document.getElementById("pageTitleInput").value || "").trim();
+        try {
+          const { resp, body } = await api("/v1/me/notion-target", {
+            method: "PUT",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ page_id: pageId, page_title: pageTitle || null })
+          });
+          notionResultEl.textContent = pretty({ status: resp.status, body });
+        } catch (error) {
+          notionResultEl.textContent = String(error);
+        }
+      });
+
+      document.getElementById("saveNotionBtn").addEventListener("click", async () => {
+        const notionApiToken = (document.getElementById("notionTokenInput").value || "").trim();
+        const notionApiVersion = (document.getElementById("notionVersionInput").value || "").trim();
+        const notionApiBaseUrl = (document.getElementById("notionBaseUrlInput").value || "").trim();
+        try {
+          const { resp, body } = await api("/v1/me/notion-credentials", {
+            method: "PUT",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              notion_api_token: notionApiToken,
+              notion_api_version: notionApiVersion || "2022-06-28",
+              notion_api_base_url: notionApiBaseUrl || "https://api.notion.com/v1"
+            })
+          });
+          notionResultEl.textContent = pretty({ status: resp.status, body });
+        } catch (error) {
+          notionResultEl.textContent = String(error);
+        }
+      });
+
+      document.getElementById("deleteNotionBtn").addEventListener("click", async () => {
+        try {
+          const { resp, body } = await api("/v1/me/notion-credentials", { method: "DELETE" });
+          notionResultEl.textContent = pretty({ status: resp.status, body });
+        } catch (error) {
+          notionResultEl.textContent = String(error);
+        }
+      });
+
+      document.getElementById("refreshNotionBtn").addEventListener("click", refreshNotionCredential);
+      document.getElementById("listSelfTokenBtn").addEventListener("click", refreshSelfTokens);
+
+      document.getElementById("createSelfTokenBtn").addEventListener("click", async () => {
+        const label = (document.getElementById("tokenLabelInput").value || "").trim();
+        const scopes = (document.getElementById("tokenScopesInput").value || "").trim();
+        const expiresAt = (document.getElementById("tokenExpiresInput").value || "").trim();
+        try {
+          const { resp, body } = await api("/v1/me/tokens", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              label: label || null,
+              scopes: scopes || null,
+              expires_at: expiresAt || null
+            })
+          });
+          selfTokenResultEl.textContent = pretty({ status: resp.status, body });
+          await refreshSelfTokens();
+        } catch (error) {
+          selfTokenResultEl.textContent = String(error);
+        }
+      });
+
+      document.getElementById("createUserBtn").addEventListener("click", async () => {
+        const userId = (document.getElementById("newUserIdInput").value || "").trim();
+        const displayName = (document.getElementById("newUserNameInput").value || "").trim();
+        const role = document.getElementById("newUserRoleSelect").value;
+        try {
+          const { resp, body } = await api("/v1/admin/users", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              user_id: userId,
+              display_name: displayName || null,
+              role
+            })
+          });
+          adminUsersResultEl.textContent = pretty({ status: resp.status, body });
+          await refreshUsers();
+        } catch (error) {
+          adminUsersResultEl.textContent = String(error);
+        }
+      });
+
+      document.getElementById("listUsersBtn").addEventListener("click", refreshUsers);
+
+      (async function bootstrap() {
+        const saved = localStorage.getItem(TOKEN_KEY) || "";
+        if (saved) {
+          tokenInputEl.value = saved;
+          await loadProfile();
+          await refreshSelfTokens();
+          await refreshNotionCredential();
+        }
+      })();
     </script>
   </body>
 </html>`;
@@ -312,6 +815,14 @@ export function createApp(options?: { store?: Store }) {
     }
     const specUrl = `${url.origin}${OPENAPI_SPEC_PATH}`;
     return htmlResponse(buildSwaggerUiHtml(specUrl));
+  }
+
+  async function handleConsole(request: Request): Promise<Response | null> {
+    const url = new URL(request.url);
+    if (request.method !== "GET" || (url.pathname !== "/console" && url.pathname !== "/console/")) {
+      return null;
+    }
+    return htmlResponse(buildConsoleHtml());
   }
 
   async function handleIngest(
@@ -622,6 +1133,439 @@ export function createApp(options?: { store?: Store }) {
     });
   }
 
+  async function handleAdminCreateUser(request: Request, env: Env): Promise<Response | null> {
+    const url = new URL(request.url);
+    if (request.method !== "POST" || url.pathname !== "/v1/admin/users") {
+      return null;
+    }
+    const auth = await requireUserId(request, env);
+    if (!auth.ok) {
+      return auth.response;
+    }
+    if (!canManageUsers(auth.auth.scopes)) {
+      return errorResponse(403, "FORBIDDEN", "Admin scope is required.");
+    }
+
+    let body: unknown;
+    try {
+      body = await request.json();
+    } catch {
+      return errorResponse(400, "BAD_REQUEST", "Invalid JSON body.");
+    }
+    if (!isObjectBody(body)) {
+      return errorResponse(400, "BAD_REQUEST", "Invalid request body.");
+    }
+
+    const userId = typeof body.user_id === "string" ? body.user_id.trim() : "";
+    if (!userId) {
+      return errorResponse(400, "BAD_REQUEST", "user_id is required.");
+    }
+    const roleRaw = typeof body.role === "string" ? body.role.trim() : "USER";
+    if (!isAppUserRole(roleRaw)) {
+      return errorResponse(400, "BAD_REQUEST", "role must be SUPER_ADMIN or USER.");
+    }
+    const displayName =
+      typeof body.display_name === "string" && body.display_name.trim().length > 0
+        ? body.display_name.trim()
+        : null;
+
+    return withStore(env, async (store) => {
+      const existing = await store.getUser(userId);
+      if (existing) {
+        return errorResponse(409, "CONFLICT", "User already exists.");
+      }
+      const user = await store.ensureUser({
+        userId,
+        role: roleRaw,
+        displayName
+      });
+      return jsonResponse({ user }, 201);
+    });
+  }
+
+  async function handleAdminListUsers(request: Request, env: Env): Promise<Response | null> {
+    const url = new URL(request.url);
+    if (request.method !== "GET" || url.pathname !== "/v1/admin/users") {
+      return null;
+    }
+    const auth = await requireUserId(request, env);
+    if (!auth.ok) {
+      return auth.response;
+    }
+    if (!canManageUsers(auth.auth.scopes)) {
+      return errorResponse(403, "FORBIDDEN", "Admin scope is required.");
+    }
+
+    const statusRaw = typeof url.searchParams.get("status") === "string" ? (url.searchParams.get("status") ?? "").trim() : "";
+    if (statusRaw.length > 0 && !isAppUserStatus(statusRaw)) {
+      return errorResponse(400, "BAD_REQUEST", "status must be ACTIVE, DISABLED or DELETED.");
+    }
+    const statusFilter: AppUserStatus | null = isAppUserStatus(statusRaw) ? statusRaw : null;
+
+    return withStore(env, async (store) => {
+      const users = await store.listUsers({
+        status: statusFilter
+      });
+      return jsonResponse({ users });
+    });
+  }
+
+  async function handleAdminUpdateUser(request: Request, env: Env): Promise<Response | null> {
+    if (request.method !== "PATCH") {
+      return null;
+    }
+    const url = new URL(request.url);
+    const match = url.pathname.match(/^\/v1\/admin\/users\/([^/]+)$/);
+    if (!match) {
+      return null;
+    }
+
+    const auth = await requireUserId(request, env);
+    if (!auth.ok) {
+      return auth.response;
+    }
+    if (!canManageUsers(auth.auth.scopes)) {
+      return errorResponse(403, "FORBIDDEN", "Admin scope is required.");
+    }
+
+    let body: unknown;
+    try {
+      body = await request.json();
+    } catch {
+      return errorResponse(400, "BAD_REQUEST", "Invalid JSON body.");
+    }
+    if (!isObjectBody(body)) {
+      return errorResponse(400, "BAD_REQUEST", "Invalid request body.");
+    }
+
+    const statusRaw = typeof body.status === "string" ? body.status.trim() : null;
+    if (statusRaw !== null && !isAppUserStatus(statusRaw)) {
+      return errorResponse(400, "BAD_REQUEST", "status must be ACTIVE, DISABLED or DELETED.");
+    }
+    const status: AppUserStatus | undefined = statusRaw !== null ? statusRaw : undefined;
+    const hasDisplayName = Object.prototype.hasOwnProperty.call(body, "display_name");
+    if (hasDisplayName && body.display_name !== null && typeof body.display_name !== "string") {
+      return errorResponse(400, "BAD_REQUEST", "display_name must be string or null.");
+    }
+    if (statusRaw === null && !hasDisplayName) {
+      return errorResponse(400, "BAD_REQUEST", "At least one updatable field is required.");
+    }
+
+    const displayName =
+      hasDisplayName && typeof body.display_name === "string" && body.display_name.trim().length > 0
+        ? body.display_name.trim()
+        : hasDisplayName
+          ? null
+          : undefined;
+
+    return withStore(env, async (store) => {
+      const user = await store.updateUser({
+        userId: match[1],
+        status,
+        displayName
+      });
+      if (!user) {
+        return errorResponse(404, "NOT_FOUND", "User not found.");
+      }
+      return jsonResponse({ user });
+    });
+  }
+
+  async function handleAdminDeleteUser(request: Request, env: Env): Promise<Response | null> {
+    if (request.method !== "DELETE") {
+      return null;
+    }
+    const url = new URL(request.url);
+    const match = url.pathname.match(/^\/v1\/admin\/users\/([^/]+)$/);
+    if (!match) {
+      return null;
+    }
+
+    const auth = await requireUserId(request, env);
+    if (!auth.ok) {
+      return auth.response;
+    }
+    if (!canManageUsers(auth.auth.scopes)) {
+      return errorResponse(403, "FORBIDDEN", "Admin scope is required.");
+    }
+    if (match[1] === auth.auth.userId) {
+      return errorResponse(400, "BAD_REQUEST", "Current admin user cannot delete itself.");
+    }
+
+    return withStore(env, async (store) => {
+      const deleted = await store.deleteUser(match[1]);
+      if (!deleted) {
+        return errorResponse(404, "NOT_FOUND", "User not found.");
+      }
+      return jsonResponse({
+        user_id: match[1],
+        status: "DELETED"
+      });
+    });
+  }
+
+  async function handleMeProfile(request: Request, env: Env): Promise<Response | null> {
+    const url = new URL(request.url);
+    if (request.method !== "GET" || url.pathname !== "/v1/me") {
+      return null;
+    }
+    const auth = await requireUserId(request, env);
+    if (!auth.ok) {
+      return auth.response;
+    }
+
+    return withStore(env, async (store) => {
+      const user = await store.ensureUser({
+        userId: auth.auth.userId,
+        role: canManageUsers(auth.auth.scopes) ? "SUPER_ADMIN" : "USER"
+      });
+      return jsonResponse({
+        user,
+        is_admin: canManageUsers(auth.auth.scopes)
+      });
+    });
+  }
+
+  async function handleMeListTokens(request: Request, env: Env): Promise<Response | null> {
+    const url = new URL(request.url);
+    if (request.method !== "GET" || url.pathname !== "/v1/me/tokens") {
+      return null;
+    }
+    const auth = await requireUserId(request, env);
+    if (!auth.ok) {
+      return auth.response;
+    }
+
+    return withStore(env, async (store) => {
+      const tokens = await store.listAccessTokens({
+        userId: auth.auth.userId
+      });
+      return jsonResponse({
+        tokens: tokens.map(toPublicToken)
+      });
+    });
+  }
+
+  async function handleMeCreateToken(request: Request, env: Env): Promise<Response | null> {
+    const url = new URL(request.url);
+    if (request.method !== "POST" || url.pathname !== "/v1/me/tokens") {
+      return null;
+    }
+    const auth = await requireUserId(request, env);
+    if (!auth.ok) {
+      return auth.response;
+    }
+
+    let body: unknown = {};
+    try {
+      body = await request.json();
+    } catch {
+      return errorResponse(400, "BAD_REQUEST", "Invalid JSON body.");
+    }
+    if (!isObjectBody(body)) {
+      return errorResponse(400, "BAD_REQUEST", "Invalid request body.");
+    }
+
+    const label = typeof body.label === "string" ? body.label : null;
+    const scopesInput = parseScopesInput(body.scopes);
+    const scopes = scopesInput.length > 0 ? scopesInput : ["items:read", "items:write"];
+    if (!canManageUsers(auth.auth.scopes) && containsPrivilegedScope(scopes)) {
+      return errorResponse(403, "FORBIDDEN", "Creating privileged scopes is not allowed.");
+    }
+    const expiresAt = normalizeExpiresAt(body.expires_at);
+    if (expiresAt === "__INVALID__") {
+      return errorResponse(400, "BAD_REQUEST", "expires_at must be a valid ISO datetime.");
+    }
+
+    return withStore(env, async (store) => {
+      await store.ensureUser({
+        userId: auth.auth.userId,
+        role: canManageUsers(auth.auth.scopes) ? "SUPER_ADMIN" : "USER"
+      });
+      const issued = await store.issueAccessToken({
+        userId: auth.auth.userId,
+        label,
+        scopes,
+        expiresAt
+      });
+      return jsonResponse(
+        {
+          token: issued.plainToken,
+          token_record: toPublicToken(issued.token)
+        },
+        201
+      );
+    });
+  }
+
+  async function handleMeRevokeToken(request: Request, env: Env): Promise<Response | null> {
+    if (request.method !== "POST") {
+      return null;
+    }
+    const url = new URL(request.url);
+    const match = url.pathname.match(/^\/v1\/me\/tokens\/([^/]+)\/revoke$/);
+    if (!match) {
+      return null;
+    }
+    const auth = await requireUserId(request, env);
+    if (!auth.ok) {
+      return auth.response;
+    }
+
+    const tokenId = match[1];
+    return withStore(env, async (store) => {
+      const token = await store.getAccessTokenById(tokenId);
+      if (!token || token.user_id !== auth.auth.userId) {
+        return errorResponse(404, "NOT_FOUND", "Token not found.");
+      }
+      await store.revokeAccessToken({ tokenId });
+      return jsonResponse({
+        token_id: tokenId,
+        status: "REVOKED"
+      });
+    });
+  }
+
+  async function handleMeGetNotionCredentials(request: Request, env: Env): Promise<Response | null> {
+    const url = new URL(request.url);
+    if (request.method !== "GET" || url.pathname !== "/v1/me/notion-credentials") {
+      return null;
+    }
+    const auth = await requireUserId(request, env);
+    if (!auth.ok) {
+      return auth.response;
+    }
+
+    return withStore(env, async (store) => {
+      const credential = await store.getUserNotionCredential(auth.auth.userId);
+      return jsonResponse({
+        configured: Boolean(credential),
+        credential
+      });
+    });
+  }
+
+  async function handleMePutNotionCredentials(request: Request, env: Env): Promise<Response | null> {
+    const url = new URL(request.url);
+    if (request.method !== "PUT" || url.pathname !== "/v1/me/notion-credentials") {
+      return null;
+    }
+    const auth = await requireUserId(request, env);
+    if (!auth.ok) {
+      return auth.response;
+    }
+    const rawKey = env.CREDENTIALS_ENCRYPTION_KEY?.trim() ?? "";
+    if (!rawKey) {
+      return errorResponse(500, "CONFIG_MISSING", "CREDENTIALS_ENCRYPTION_KEY is required.");
+    }
+
+    let body: unknown;
+    try {
+      body = await request.json();
+    } catch {
+      return errorResponse(400, "BAD_REQUEST", "Invalid JSON body.");
+    }
+    if (!isObjectBody(body)) {
+      return errorResponse(400, "BAD_REQUEST", "Invalid request body.");
+    }
+    const notionApiToken =
+      typeof body.notion_api_token === "string" ? body.notion_api_token.trim() : "";
+    if (!notionApiToken) {
+      return errorResponse(400, "BAD_REQUEST", "notion_api_token is required.");
+    }
+    const apiVersion =
+      typeof body.notion_api_version === "string" && body.notion_api_version.trim().length > 0
+        ? body.notion_api_version.trim()
+        : (env.NOTION_API_VERSION ?? "2022-06-28");
+    const apiBaseUrl = normalizeApiBaseUrl(
+      typeof body.notion_api_base_url === "string" ? body.notion_api_base_url : env.NOTION_API_BASE_URL
+    );
+
+    const encrypted = await encryptSecret(notionApiToken, rawKey);
+    const tokenHint = notionApiToken.length <= 6 ? notionApiToken : notionApiToken.slice(-6);
+
+    return withStore(env, async (store) => {
+      await store.ensureUser({
+        userId: auth.auth.userId,
+        role: canManageUsers(auth.auth.scopes) ? "SUPER_ADMIN" : "USER"
+      });
+      const credential = await store.upsertUserNotionCredential({
+        userId: auth.auth.userId,
+        tokenCiphertext: encrypted.tokenCiphertext,
+        tokenIv: encrypted.tokenIv,
+        tokenTag: encrypted.tokenTag,
+        tokenHint,
+        apiVersion,
+        apiBaseUrl
+      });
+      return jsonResponse({
+        configured: true,
+        credential
+      });
+    });
+  }
+
+  async function handleMeDeleteNotionCredentials(request: Request, env: Env): Promise<Response | null> {
+    const url = new URL(request.url);
+    if (request.method !== "DELETE" || url.pathname !== "/v1/me/notion-credentials") {
+      return null;
+    }
+    const auth = await requireUserId(request, env);
+    if (!auth.ok) {
+      return auth.response;
+    }
+
+    return withStore(env, async (store) => {
+      const deleted = await store.deleteUserNotionCredential(auth.auth.userId);
+      return jsonResponse({
+        configured: false,
+        deleted
+      });
+    });
+  }
+
+  async function handleMeUpdateTarget(request: Request, env: Env): Promise<Response | null> {
+    const url = new URL(request.url);
+    if (request.method !== "PUT" || url.pathname !== "/v1/me/notion-target") {
+      return null;
+    }
+    const auth = await requireUserId(request, env);
+    if (!auth.ok) {
+      return auth.response;
+    }
+
+    let body: unknown;
+    try {
+      body = await request.json();
+    } catch {
+      return errorResponse(400, "BAD_REQUEST", "Invalid JSON body.");
+    }
+    if (!isObjectBody(body)) {
+      return errorResponse(400, "BAD_REQUEST", "Invalid request body.");
+    }
+    const rawPageId = typeof body.page_id === "string" ? body.page_id : null;
+    if (!rawPageId || rawPageId.trim().length === 0) {
+      return errorResponse(400, "BAD_REQUEST", "page_id is required.");
+    }
+    const pageId = rawPageId.trim();
+    const pageTitle =
+      typeof body.page_title === "string" && body.page_title.trim().length > 0
+        ? body.page_title.trim()
+        : null;
+
+    return withStore(env, async (store) => {
+      const settings = await store.upsertSettings({
+        userId: auth.auth.userId,
+        targetPageId: pageId,
+        targetPageTitle: pageTitle
+      });
+      return jsonResponse({
+        page_id: settings.target_page_id,
+        page_title: settings.target_page_title
+      });
+    });
+  }
+
   async function handleAdminCreateToken(request: Request, env: Env): Promise<Response | null> {
     const url = new URL(request.url);
     if (request.method !== "POST" || url.pathname !== "/v1/admin/tokens") {
@@ -761,6 +1705,7 @@ export function createApp(options?: { store?: Store }) {
       const handlers = [
         () => handleHealthz(request),
         () => handleDocs(request),
+        () => handleConsole(request),
         () => handleOpenApiSpec(request),
         () => handleIngest(request, env, ctx, logger),
         () => handleListItems(request, env),
@@ -769,6 +1714,18 @@ export function createApp(options?: { store?: Store }) {
         () => handleAuthStart(request, env),
         () => handleAuthCallback(request, env),
         () => handleUpdateTarget(request, env),
+        () => handleMeProfile(request, env),
+        () => handleMeListTokens(request, env),
+        () => handleMeCreateToken(request, env),
+        () => handleMeRevokeToken(request, env),
+        () => handleMeGetNotionCredentials(request, env),
+        () => handleMePutNotionCredentials(request, env),
+        () => handleMeDeleteNotionCredentials(request, env),
+        () => handleMeUpdateTarget(request, env),
+        () => handleAdminCreateUser(request, env),
+        () => handleAdminListUsers(request, env),
+        () => handleAdminUpdateUser(request, env),
+        () => handleAdminDeleteUser(request, env),
         () => handleAdminCreateToken(request, env),
         () => handleAdminListTokens(request, env),
         () => handleAdminRevokeToken(request, env)

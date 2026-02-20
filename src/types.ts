@@ -9,6 +9,12 @@ export const ITEM_STATUSES = [
 
 export type ItemStatus = (typeof ITEM_STATUSES)[number];
 
+export const APP_USER_ROLES = ["SUPER_ADMIN", "USER"] as const;
+export type AppUserRole = (typeof APP_USER_ROLES)[number];
+
+export const APP_USER_STATUSES = ["ACTIVE", "DISABLED", "DELETED"] as const;
+export type AppUserStatus = (typeof APP_USER_STATUSES)[number];
+
 export interface SyncError {
   code: string;
   message: string;
@@ -42,6 +48,25 @@ export interface UserSettings {
   workspace_name: string | null;
   target_page_id: string | null;
   target_page_title: string | null;
+}
+
+export interface AppUser {
+  id: string;
+  display_name: string | null;
+  role: AppUserRole;
+  status: AppUserStatus;
+  created_at: string;
+  updated_at: string;
+  deleted_at: string | null;
+}
+
+export interface UserNotionCredential {
+  user_id: string;
+  token_hint: string | null;
+  api_version: string;
+  api_base_url: string;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface OAuthState {
