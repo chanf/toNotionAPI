@@ -1,7 +1,6 @@
 import type { ParsedArticle } from "./article-parser";
 
 const NOTION_RICH_TEXT_MAX_LENGTH = 1900;
-const NOTION_MAX_URL_LENGTH = 2000;
 
 type NotionBlock = Record<string, unknown>;
 
@@ -108,23 +107,6 @@ function createCodeBlock(text: string): NotionBlock | null {
   };
 }
 
-function createImageBlock(url: string): NotionBlock | null {
-  const trimmed = url.trim();
-  if (trimmed.length === 0 || trimmed.length > NOTION_MAX_URL_LENGTH) {
-    return null;
-  }
-  return {
-    object: "block",
-    type: "image",
-    image: {
-      type: "external",
-      external: {
-        url: trimmed
-      }
-    }
-  };
-}
-
 function isSpecialMarkdownLine(line: string): boolean {
   return (
     /^#{1,3}\s+/.test(line) ||
@@ -165,12 +147,8 @@ export function markdownToNotionBlocks(markdown: string): NotionBlock[] {
       continue;
     }
 
-    const imageMatch = /^!\[[^\]]*]\(([^)]+)\)$/.exec(line);
-    if (imageMatch) {
-      const imageBlock = createImageBlock(imageMatch[1]);
-      if (imageBlock) {
-        blocks.push(imageBlock);
-      }
+    if (/^!\[[^\]]*]\(([^)]+)\)$/.test(line)) {
+      // 当前阶段先跳过图片块，避免外链 URL 校验导致整篇同步失败。
       index += 1;
       continue;
     }

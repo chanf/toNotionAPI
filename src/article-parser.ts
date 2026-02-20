@@ -264,14 +264,6 @@ export function extractElementById(html: string, elementId: string): string | nu
   return null;
 }
 
-function extractImageUrlFromTag(tag: string, baseUrl: URL): string | null {
-  const srcMatch = /\b(?:data-src|src)\s*=\s*["']([^"']+)["']/i.exec(tag);
-  if (!srcMatch) {
-    return null;
-  }
-  return toAbsoluteHttpUrl(decodeHtmlEntities(srcMatch[1]), baseUrl);
-}
-
 function convertListToMarkdown(listHtml: string, ordered: boolean): string {
   const items: string[] = [];
   const itemPattern = /<li[^>]*>([\s\S]*?)<\/li>/gi;
@@ -295,7 +287,7 @@ function convertListToMarkdown(listHtml: string, ordered: boolean): string {
   );
 }
 
-export function convertHtmlToMarkdown(contentHtml: string, baseUrl: URL): string {
+export function convertHtmlToMarkdown(contentHtml: string, _baseUrl: URL): string {
   let markdown = contentHtml
     .replace(/<script[\s\S]*?<\/script>/gi, "")
     .replace(/<style[\s\S]*?<\/style>/gi, "")
@@ -330,10 +322,8 @@ export function convertHtmlToMarkdown(contentHtml: string, baseUrl: URL): string
   markdown = markdown.replace(/<ol[^>]*>([\s\S]*?)<\/ol>/gi, (_all, inner: string) =>
     convertListToMarkdown(inner, true)
   );
-  markdown = markdown.replace(/<img\b[^>]*>/gi, (tag: string) => {
-    const imageUrl = extractImageUrlFromTag(tag, baseUrl);
-    return imageUrl ? `\n\n![](${imageUrl})\n\n` : "\n\n";
-  });
+  // 当前阶段先忽略图片，优先保障正文链路稳定写入 Notion。
+  markdown = markdown.replace(/<img\b[^>]*>/gi, "\n\n");
   markdown = markdown.replace(
     /<(p|div|section|article)[^>]*>([\s\S]*?)<\/\1>/gi,
     (_all, _tag: string, inner: string) => {
@@ -357,7 +347,7 @@ export function markdownToPlainText(markdown: string): string {
         .replace(/^>\s?/, "")
         .replace(/^[-*]\s+/, "")
         .replace(/^\d+\.\s+/, "")
-        .replace(/!\[[^\]]*]\(([^)]+)\)/g, "$1")
+        .replace(/!\[[^\]]*]\(([^)]+)\)/g, "")
         .replace(/`([^`]+)`/g, "$1")
     );
   return normalizeText(lines.join("\n"));

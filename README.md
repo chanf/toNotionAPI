@@ -160,12 +160,13 @@ curl -X PUT "https://tonotion.iiioiii.xin/v1/settings/notion-target" \
 
 1. Worker 获取 `mp.weixin.qq.com` 页面 HTML。
 2. 从 `id="js_content"` 提取正文区域。
-3. 将正文 HTML 转为 Markdown（支持段落、标题、列表、引用、代码块、图片）。
+3. 将正文 HTML 转为 Markdown（支持段落、标题、列表、引用、代码块）。
 4. 将 Markdown 转成 Notion Blocks 并写入页面。
 
 说明：
 
 - 若请求里提供 `raw_text` 且它不是 URL，会作为本地兜底正文（便于离线测试）。
+- 当前为了优先保障链路稳定，图片会被忽略，不写入 Notion。
 - Notion 单次 append children 有 100 条限制，服务端会自动分批追加。
 - Notion `rich_text.text.content` 有长度限制，服务端会自动分段截断，避免超限报错。
 

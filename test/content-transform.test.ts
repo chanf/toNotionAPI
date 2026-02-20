@@ -28,7 +28,7 @@ describe("article parser", () => {
     expect(markdown).toContain("## 测试标题");
     expect(markdown).toContain("第一段");
     expect(markdown).toContain("- 列表一");
-    expect(markdown).toContain("![](https://img.example.com/pic.jpg)");
+    expect(markdown).not.toContain("![](https://img.example.com/pic.jpg)");
   });
 
   it("uses provided raw_text as fallback without remote fetch", async () => {
@@ -62,7 +62,7 @@ describe("notion blocks transform", () => {
     expect(blockTypes).toContain("bulleted_list_item");
     expect(blockTypes).toContain("numbered_list_item");
     expect(blockTypes).toContain("quote");
-    expect(blockTypes).toContain("image");
+    expect(blockTypes).not.toContain("image");
     expect(blockTypes).toContain("paragraph");
   });
 
