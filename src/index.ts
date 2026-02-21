@@ -453,6 +453,20 @@ function parseNotionOAuthTokenPayload(raw: unknown): NotionOAuthTokenPayload | n
   };
 }
 
+async function parseNotionApiErrorMessage(response: Response): Promise<string | null> {
+  try {
+    const body = (await response.json()) as Record<string, unknown>;
+    const code = typeof body.code === "string" ? body.code : null;
+    const message = typeof body.message === "string" ? body.message : null;
+    if (message && code) {
+      return `${message} (code: ${code})`;
+    }
+    return message ?? code;
+  } catch {
+    return null;
+  }
+}
+
 async function requestNotionOAuthToken(
   config: NotionOAuthConfig,
   body: Record<string, string>
@@ -787,6 +801,7 @@ function buildConsoleHtml(): string {
           <div class="row">
             <button id="saveNotionBtn" class="primary">保存 Notion 凭证</button>
             <button id="deleteNotionBtn" class="danger">删除 Notion 凭证</button>
+            <button id="testNotionBtn">测试连通性</button>
             <button id="refreshNotionBtn">刷新状态</button>
           </div>
           <pre id="notionResult">暂无结果</pre>
@@ -1238,6 +1253,26 @@ function buildConsoleHtml(): string {
       document.getElementById("deleteNotionBtn").addEventListener("click", async () => {
         try {
           const { resp, body } = await api("/v1/me/notion-credentials", { method: "DELETE" });
+          notionResultEl.textContent = pretty({ status: resp.status, body });
+        } catch (error) {
+          notionResultEl.textContent = String(error);
+        }
+      });
+
+      document.getElementById("testNotionBtn").addEventListener("click", async () => {
+        const notionApiToken = (document.getElementById("notionTokenInput").value || "").trim();
+        const notionApiVersion = (document.getElementById("notionVersionInput").value || "").trim();
+        const notionApiBaseUrl = (document.getElementById("notionBaseUrlInput").value || "").trim();
+        try {
+          const { resp, body } = await api("/v1/me/notion-connectivity-test", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              notion_api_token: notionApiToken || null,
+              notion_api_version: notionApiVersion || null,
+              notion_api_base_url: notionApiBaseUrl || null
+            })
+          });
           notionResultEl.textContent = pretty({ status: resp.status, body });
         } catch (error) {
           notionResultEl.textContent = String(error);
@@ -2788,6 +2823,139 @@ export function createApp(options?: { store?: Store }) {
     });
   }
 
+  async function handleMeTestNotionConnectivity(request: Request, env: Env): Promise<Response | null> {
+    const url = new URL(request.url);
+    if (request.method !== "POST" || url.pathname !== "/v1/me/notion-connectivity-test") {
+      return null;
+    }
+    const auth = await requireUserId(request, env);
+    if (!auth.ok) {
+      return auth.response;
+    }
+
+    let body: unknown = {};
+    try {
+      const raw = await request.text();
+      if (raw.trim().length > 0) {
+        body = JSON.parse(raw);
+      }
+    } catch {
+      return errorResponse(400, "BAD_REQUEST", "Invalid JSON body.");
+    }
+    if (!isObjectBody(body)) {
+      return errorResponse(400, "BAD_REQUEST", "Invalid request body.");
+    }
+
+    const payload = body as Partial<
+      Pick<IngestRequest, "notion_api_token" | "notion_api_version" | "notion_api_base_url">
+    >;
+    const runtime = resolveNotionRuntimeFromRequest(env, payload);
+    const notionApiVersion = (runtime.apiVersion ?? "2025-09-03").trim() || "2025-09-03";
+    let notionApiBaseUrl = normalizeApiBaseUrl(runtime.apiBaseUrl);
+    let notionApiToken = runtime.apiToken;
+    let tokenSource: "request" | "stored" = "request";
+
+    return withStore(env, async (store) => {
+      const settings = await store.getSettings(auth.auth.userId);
+      if (!settings.target_page_id) {
+        return errorResponse(400, "NOTION_TARGET_MISSING", "Notion target page id is not configured.");
+      }
+
+      if (!notionApiToken) {
+        const credential = await store.getUserNotionCredentialSecret(auth.auth.userId);
+        if (!credential) {
+          return errorResponse(
+            400,
+            "NOTION_TOKEN_MISSING",
+            "notion_api_token is required or save Notion credential first."
+          );
+        }
+        const rawKey = env.CREDENTIALS_ENCRYPTION_KEY?.trim() ?? "";
+        if (!rawKey) {
+          return errorResponse(500, "CONFIG_MISSING", "CREDENTIALS_ENCRYPTION_KEY is required.");
+        }
+        try {
+          notionApiToken = (await decryptSecret(
+            {
+              tokenCiphertext: credential.token_ciphertext,
+              tokenIv: credential.token_iv,
+              tokenTag: credential.token_tag
+            },
+            rawKey
+          )).trim();
+        } catch {
+          return errorResponse(500, "DECRYPT_FAILED", "Failed to decrypt saved Notion credential.");
+        }
+        if (!notionApiToken) {
+          return errorResponse(400, "NOTION_TOKEN_MISSING", "Saved Notion credential is empty.");
+        }
+        const hasVersionOverride =
+          typeof payload.notion_api_version === "string" && payload.notion_api_version.trim().length > 0;
+        const hasBaseUrlOverride =
+          typeof payload.notion_api_base_url === "string" && payload.notion_api_base_url.trim().length > 0;
+        if (!hasVersionOverride && credential.api_version) {
+          runtime.apiVersion = credential.api_version;
+        }
+        if (!hasBaseUrlOverride && credential.api_base_url) {
+          notionApiBaseUrl = normalizeApiBaseUrl(credential.api_base_url);
+        }
+        tokenSource = "stored";
+      }
+
+      const response = await globalThis.fetch(`${notionApiBaseUrl}/pages/${settings.target_page_id}`, {
+        method: "GET",
+        headers: {
+          authorization: `Bearer ${notionApiToken}`,
+          "notion-version": runtime.apiVersion?.trim() || notionApiVersion
+        }
+      });
+      if (response.ok) {
+        return jsonResponse({
+          ok: true,
+          token_source: tokenSource,
+          target_page_id: settings.target_page_id,
+          notion_api_version: runtime.apiVersion?.trim() || notionApiVersion,
+          notion_api_base_url: notionApiBaseUrl
+        });
+      }
+
+      const detail = await parseNotionApiErrorMessage(response);
+      if (response.status === 401 || response.status === 403) {
+        return errorResponse(
+          401,
+          "NOTION_AUTH_FAILED",
+          `Notion authentication failed.${detail ? ` ${detail}` : ""}`
+        );
+      }
+      if (response.status === 404) {
+        return errorResponse(
+          404,
+          "NOTION_TARGET_NOT_FOUND",
+          `Notion target page not found or not shared.${detail ? ` ${detail}` : ""}`
+        );
+      }
+      if (response.status === 429) {
+        return errorResponse(
+          429,
+          "NOTION_RATE_LIMITED",
+          `Notion API rate limit exceeded.${detail ? ` ${detail}` : ""}`
+        );
+      }
+      if (response.status >= 500) {
+        return errorResponse(
+          502,
+          "NOTION_UPSTREAM_ERROR",
+          `Notion upstream service is unavailable.${detail ? ` ${detail}` : ""}`
+        );
+      }
+      return errorResponse(
+        400,
+        "NOTION_REQUEST_FAILED",
+        `Notion request failed with status ${response.status}.${detail ? ` ${detail}` : ""}`
+      );
+    });
+  }
+
   async function handleMeUpdateTarget(request: Request, env: Env): Promise<Response | null> {
     const url = new URL(request.url);
     if (request.method !== "PUT" || url.pathname !== "/v1/me/notion-target") {
@@ -3213,6 +3381,7 @@ export function createApp(options?: { store?: Store }) {
         () => handleMeGetNotionCredentials(request, env),
         () => handleMePutNotionCredentials(request, env),
         () => handleMeDeleteNotionCredentials(request, env),
+        () => handleMeTestNotionConnectivity(request, env),
         () => handleMeUpdateTarget(request, env),
         () => handleAdminCreateUser(request, env),
         () => handleAdminListUsers(request, env),

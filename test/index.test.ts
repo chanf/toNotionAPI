@@ -636,6 +636,106 @@ describe("workers backend api", () => {
     expect(setTarget.status).toBe(200);
   });
 
+  it("tests notion connectivity with request token and saved credential", async () => {
+    const app = createApp({ store: new InMemoryStore() });
+    const ctx = new TestContext();
+    const envWithKey: Env = {
+      ...DEV_ENV,
+      CREDENTIALS_ENCRYPTION_KEY: "test-encryption-key"
+    };
+
+    const setTarget = await sendJson(
+      app,
+      ctx,
+      "/v1/me/notion-target",
+      "PUT",
+      {
+        page_id: "30db8736e20380c2bcb2f33e5c776c36",
+        page_title: "Connectivity Target"
+      },
+      true,
+      envWithKey
+    );
+    expect(setTarget.status).toBe(200);
+
+    const calledAuthHeaders: string[] = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(typeof input === "string" ? input : input.toString());
+      const authHeader = new Headers(init?.headers).get("authorization");
+      if (authHeader) {
+        calledAuthHeaders.push(authHeader);
+      }
+      if (url.pathname.startsWith("/v1/pages/")) {
+        return new Response(JSON.stringify({ id: "target-page" }), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        });
+      }
+      return new Response("not found", { status: 404 });
+    });
+
+    vi.stubGlobal("fetch", fetchMock as typeof fetch);
+    try {
+      const byRequestToken = await sendJson(
+        app,
+        ctx,
+        "/v1/me/notion-connectivity-test",
+        "POST",
+        {
+          notion_api_token: "ntn_request_connectivity_123456",
+          notion_api_version: "2025-09-03",
+          notion_api_base_url: "https://api.notion.com/v1"
+        },
+        true,
+        envWithKey
+      );
+      expect(byRequestToken.status).toBe(200);
+      const requestPayload = await byRequestToken.json() as {
+        ok: boolean;
+        token_source: string;
+      };
+      expect(requestPayload.ok).toBe(true);
+      expect(requestPayload.token_source).toBe("request");
+
+      const putCredential = await sendJson(
+        app,
+        ctx,
+        "/v1/me/notion-credentials",
+        "PUT",
+        {
+          notion_api_token: "ntn_saved_connectivity_654321",
+          notion_api_version: "2025-09-03",
+          notion_api_base_url: "https://api.notion.com/v1"
+        },
+        true,
+        envWithKey
+      );
+      expect(putCredential.status).toBe(200);
+
+      const byStoredToken = await sendJson(
+        app,
+        ctx,
+        "/v1/me/notion-connectivity-test",
+        "POST",
+        {},
+        true,
+        envWithKey
+      );
+      expect(byStoredToken.status).toBe(200);
+      const storedPayload = await byStoredToken.json() as {
+        ok: boolean;
+        token_source: string;
+      };
+      expect(storedPayload.ok).toBe(true);
+      expect(storedPayload.token_source).toBe("stored");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+
+    expect(calledAuthHeaders.some((header) => header === "Bearer ntn_request_connectivity_123456")).toBe(true);
+    expect(calledAuthHeaders.some((header) => header === "Bearer ntn_saved_connectivity_654321")).toBe(true);
+  });
+
   it("uses notion_api_token from ingest request in real mode", async () => {
     const store = new InMemoryStore();
     const app = createApp({ store });

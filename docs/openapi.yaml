@@ -431,6 +431,42 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
 
+  /v1/me/notion-connectivity-test:
+    post:
+      tags: [Me]
+      summary: Test Notion credential and target page connectivity
+      operationId: testMyNotionConnectivity
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MeNotionConnectivityTestRequest'
+      responses:
+        '200':
+          description: Notion connectivity test passed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MeNotionConnectivityTestResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          description: Notion rate limited
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
   /v1/me/notion-target:
     put:
       tags: [Me]
@@ -1257,6 +1293,35 @@ components:
           type: boolean
         deleted:
           type: boolean
+
+    MeNotionConnectivityTestRequest:
+      type: object
+      properties:
+        notion_api_token:
+          type: string
+          nullable: true
+          description: Optional request-level token for immediate test.
+        notion_api_version:
+          type: string
+          nullable: true
+        notion_api_base_url:
+          type: string
+          nullable: true
+
+    MeNotionConnectivityTestResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+        token_source:
+          type: string
+          enum: [request, stored]
+        target_page_id:
+          type: string
+        notion_api_version:
+          type: string
+        notion_api_base_url:
+          type: string
 
     MeNotionTargetRequest:
       type: object

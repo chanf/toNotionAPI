@@ -106,6 +106,7 @@ https://tonotion.iiioiii.xin/console
 - `GET /v1/me/notion-credentials`
 - `PUT /v1/me/notion-credentials`
 - `DELETE /v1/me/notion-credentials`
+- `POST /v1/me/notion-connectivity-test`
 - `PUT /v1/me/notion-target`
 - `POST /v1/admin/users`
 - `GET /v1/admin/users`
@@ -197,7 +198,7 @@ VALUES
 
 ```bash
 # 1) 生成一个明文超管 token（可自定义）
-SUPER_ADMIN_TOKEN="wx2n_admin_feng_$(date +%Y%m%d_%H%M%S)"
+SUPER_ADMIN_TOKEN="wx2n_$(date +%Y%m%d_%H%M%S)"
 TOKEN_ID="token-superadmin-feng-$(date +%s)"
 
 # 2) 计算哈希
@@ -489,6 +490,7 @@ http://127.0.0.1:4173
   - 查看 `/v1/me` 资料
   - 管理自己的 `/v1/me/tokens*`
   - 管理自己的 `/v1/me/notion-credentials` 与 `/v1/me/notion-target`
+  - 通过 `/v1/me/notion-connectivity-test` 测试 Notion 凭证与目标页连通性
   - 使用“同步测试工具”提交公众号 URL + `notion_api_token`，并轮询 `/v1/items/{itemId}` 查看最终状态
 - 超管额外能力：
   - 管理 `/v1/admin/users*`（创建/查询/更新/删除用户）
