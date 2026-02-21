@@ -190,6 +190,7 @@ describe("workers backend api", () => {
     expect(html).toContain("/v1/me");
     expect(html).toContain("同步测试工具");
     expect(html).toContain("submitIngestTestBtn");
+    expect(html).toContain("sessionStatus");
   });
 
   it("returns 500 when DB binding is missing", async () => {
@@ -238,6 +239,8 @@ describe("workers backend api", () => {
       headers: { Authorization: `Bearer ${issued.plainToken}` }
     });
     expect(login.status).toBe(200);
+    const loginPayload = await login.json() as { expires_at: string };
+    expect(typeof loginPayload.expires_at).toBe("string");
     const setCookie = login.headers.get("set-cookie") ?? "";
     expect(setCookie).toContain("tonotion_console_session=");
     const cookieHeader = setCookie.split(";")[0];
@@ -248,9 +251,25 @@ describe("workers backend api", () => {
       headers: { cookie: cookieHeader }
     });
     expect(session.status).toBe(200);
-    const sessionPayload = await session.json() as { user: { id: string }; is_admin: boolean };
+    const sessionPayload = await session.json() as {
+      user: { id: string };
+      is_admin: boolean;
+      session_expires_at?: string | null;
+    };
     expect(sessionPayload.user.id).toBe("console-user");
     expect(sessionPayload.is_admin).toBe(false);
+    expect(typeof sessionPayload.session_expires_at).toBe("string");
+
+    const refresh = await send(app, ctx, "/v1/console/refresh", {
+      method: "POST",
+      headers: { cookie: cookieHeader }
+    });
+    expect(refresh.status).toBe(200);
+    const refreshPayload = await refresh.json() as { refreshed: boolean; expires_at: string };
+    expect(refreshPayload.refreshed).toBe(true);
+    expect(typeof refreshPayload.expires_at).toBe("string");
+    expect(Number.isFinite(Date.parse(refreshPayload.expires_at))).toBe(true);
+    expect(refresh.headers.get("set-cookie") ?? "").toContain("tonotion_console_session=");
 
     const me = await send(app, ctx, "/v1/me", {
       method: "GET",
@@ -264,6 +283,18 @@ describe("workers backend api", () => {
     });
     expect(logout.status).toBe(200);
     expect(logout.headers.get("set-cookie") ?? "").toContain("Max-Age=0");
+  });
+
+  it("requires console session cookie for refresh", async () => {
+    const app = createApp({ store: new InMemoryStore() });
+    const ctx = new TestContext();
+
+    const response = await send(app, ctx, "/v1/console/refresh", {
+      method: "POST"
+    });
+    expect(response.status).toBe(401);
+    const payload = await response.json() as { error: { code: string } };
+    expect(payload.error.code).toBe("UNAUTHORIZED");
   });
 
   it("returns CONFIG_MISSING when console session secret is absent", async () => {

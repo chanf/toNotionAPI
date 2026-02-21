@@ -73,6 +73,25 @@ paths:
               schema:
                 $ref: '#/components/schemas/ConsoleLogoutResponse'
 
+  /v1/console/refresh:
+    post:
+      tags: [Console]
+      summary: Refresh console session cookie before expiry
+      operationId: consoleRefresh
+      security:
+        - cookieAuth: []
+      responses:
+        '200':
+          description: Console session refreshed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConsoleRefreshResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
   /v1/console/session:
     get:
       tags: [Console]
@@ -87,7 +106,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/MeProfileResponse'
+                $ref: '#/components/schemas/ConsoleSessionResponse'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -898,6 +917,23 @@ components:
       properties:
         logged_out:
           type: boolean
+
+    ConsoleRefreshResponse:
+      type: object
+      properties:
+        refreshed:
+          type: boolean
+        expires_at:
+          type: string
+
+    ConsoleSessionResponse:
+      allOf:
+        - $ref: '#/components/schemas/MeProfileResponse'
+        - type: object
+          properties:
+            session_expires_at:
+              type: string
+              nullable: true
 
     ErrorResponse:
       type: object

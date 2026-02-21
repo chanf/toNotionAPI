@@ -89,6 +89,7 @@ https://tonotion.iiioiii.xin/console
 - `GET /console`（管理后台 MVP 页面，内置同步测试工具）
 - `POST /v1/console/login`（控制台会话登录）
 - `POST /v1/console/logout`（控制台会话登出）
+- `POST /v1/console/refresh`（控制台会话续期）
 - `GET /v1/console/session`（查询当前会话）
 - `GET /openapi.yaml`（OpenAPI 规范）
 - `POST /v1/ingest`
@@ -486,6 +487,7 @@ http://127.0.0.1:4173
 
 - 访问地址：`/console`（例如 `https://tonotion.iiioiii.xin/console`）
 - 登录方式：输入任意有效 API Token，通过 `/v1/console/login` 换取 HttpOnly 会话 Cookie（`/v1/console/logout` 清理）。
+- 控制台会显示会话剩余时间，并在临近过期时自动调用 `/v1/console/refresh` 续期。
 - 普通用户能力：
   - 查看 `/v1/me` 资料
   - 管理自己的 `/v1/me/tokens*`

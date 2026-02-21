@@ -779,6 +779,7 @@ function buildConsoleHtml(): string {
           <button id="clearTokenBtn">退出登录</button>
         </div>
         <div class="status" id="loginStatus">未登录</div>
+        <div class="status" id="sessionStatus">会话状态：未建立</div>
       </div>
 
       <div class="grid">
@@ -917,6 +918,7 @@ function buildConsoleHtml(): string {
 
     <script>
       const loginStatusEl = document.getElementById("loginStatus");
+      const sessionStatusEl = document.getElementById("sessionStatus");
       const meProfileEl = document.getElementById("meProfile");
       const adminPanelEl = document.getElementById("adminPanel");
       const tokenInputEl = document.getElementById("tokenInput");
@@ -929,6 +931,11 @@ function buildConsoleHtml(): string {
       const ingestTestResultEl = document.getElementById("ingestTestResult");
 
       const INGEST_FINAL_STATUSES = new Set(["SYNCED", "SYNC_FAILED", "PARSE_FAILED"]);
+      const SESSION_WARN_THRESHOLD_MS = 10 * 60 * 1000;
+      const SESSION_AUTO_REFRESH_THRESHOLD_MS = 5 * 60 * 1000;
+      let sessionExpiresAtMs = null;
+      let sessionTimerHandle = null;
+      let sessionRefreshInFlight = false;
 
       function getToken() {
         return (tokenInputEl.value || "").trim();
@@ -936,6 +943,70 @@ function buildConsoleHtml(): string {
 
       function setStatus(text) {
         loginStatusEl.textContent = text;
+      }
+
+      function clearSessionState() {
+        sessionExpiresAtMs = null;
+        sessionRefreshInFlight = false;
+        if (sessionTimerHandle !== null) {
+          clearInterval(sessionTimerHandle);
+          sessionTimerHandle = null;
+        }
+        sessionStatusEl.textContent = "会话状态：未建立";
+      }
+
+      function parseExpiresAtToMs(expiresAtRaw) {
+        if (typeof expiresAtRaw !== "string" || !expiresAtRaw.trim()) {
+          return null;
+        }
+        const parsed = Date.parse(expiresAtRaw);
+        return Number.isFinite(parsed) ? parsed : null;
+      }
+
+      function formatRemainingDuration(ms) {
+        const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+        const hours = Math.floor(totalSeconds / 3600);
+        const minutes = Math.floor((totalSeconds % 3600) / 60);
+        const seconds = totalSeconds % 60;
+        if (hours > 0) {
+          return hours + "小时" + String(minutes).padStart(2, "0") + "分" + String(seconds).padStart(2, "0") + "秒";
+        }
+        return minutes + "分" + String(seconds).padStart(2, "0") + "秒";
+      }
+
+      function renderSessionCountdown() {
+        if (sessionExpiresAtMs === null) {
+          sessionStatusEl.textContent = "会话状态：未建立";
+          return;
+        }
+        const remainingMs = sessionExpiresAtMs - Date.now();
+        if (remainingMs <= 0) {
+          sessionStatusEl.textContent = "会话状态：已过期，请重新登录";
+          return;
+        }
+        const suffix = remainingMs <= SESSION_WARN_THRESHOLD_MS ? "（即将过期）" : "";
+        sessionStatusEl.textContent = "会话剩余：" + formatRemainingDuration(remainingMs) + suffix;
+      }
+
+      function startSessionTicker() {
+        if (sessionTimerHandle !== null) {
+          clearInterval(sessionTimerHandle);
+        }
+        renderSessionCountdown();
+        sessionTimerHandle = setInterval(() => {
+          renderSessionCountdown();
+          maybeAutoRefreshSession();
+        }, 1000);
+      }
+
+      function applySessionExpiry(expiresAtRaw) {
+        const parsed = parseExpiresAtToMs(expiresAtRaw);
+        if (parsed === null) {
+          clearSessionState();
+          return;
+        }
+        sessionExpiresAtMs = parsed;
+        startSessionTicker();
       }
 
       function pretty(data) {
@@ -984,6 +1055,37 @@ function buildConsoleHtml(): string {
           body = text;
         }
         return { resp, body };
+      }
+
+      async function maybeAutoRefreshSession() {
+        if (sessionExpiresAtMs === null || sessionRefreshInFlight) {
+          return;
+        }
+        const remainingMs = sessionExpiresAtMs - Date.now();
+        if (remainingMs <= 0) {
+          return;
+        }
+        if (remainingMs > SESSION_AUTO_REFRESH_THRESHOLD_MS) {
+          return;
+        }
+        sessionRefreshInFlight = true;
+        try {
+          const { resp, body } = await api("/v1/console/refresh", { method: "POST" });
+          if (!resp.ok) {
+            if (resp.status === 401) {
+              clearSessionState();
+              setStatus("会话已失效，请重新登录");
+              meProfileEl.textContent = "尚未加载";
+              adminPanelEl.style.display = "none";
+            }
+            return;
+          }
+          applySessionExpiry(body && body.expires_at);
+        } catch {
+          // Ignore transient network errors and retry in next tick.
+        } finally {
+          sessionRefreshInFlight = false;
+        }
       }
 
       async function loadProfile() {
@@ -1190,6 +1292,7 @@ function buildConsoleHtml(): string {
             setStatus("登录失败: " + pretty(body));
             return;
           }
+          applySessionExpiry(body && body.expires_at);
           tokenInputEl.value = "";
           setStatus("会话登录成功");
           await loadProfile();
@@ -1210,6 +1313,7 @@ function buildConsoleHtml(): string {
           // Ignore network errors when clearing UI state.
         }
         tokenInputEl.value = "";
+        clearSessionState();
         setStatus("已退出登录");
         meProfileEl.textContent = "尚未加载";
         adminPanelEl.style.display = "none";
@@ -1435,15 +1539,18 @@ function buildConsoleHtml(): string {
 
       (async function bootstrap() {
         try {
-          const { resp } = await api("/v1/console/session", { method: "GET" });
+          const { resp, body } = await api("/v1/console/session", { method: "GET" });
           if (!resp.ok) {
+            clearSessionState();
             setStatus("未登录");
             return;
           }
+          applySessionExpiry(body && body.session_expires_at);
           await loadProfile();
           await refreshSelfTokens();
           await refreshNotionCredential();
         } catch {
+          clearSessionState();
           setStatus("未登录");
         }
       })();
@@ -1819,6 +1926,35 @@ export function createApp(options?: { store?: Store }) {
     return response;
   }
 
+  async function handleConsoleRefresh(request: Request, env: Env): Promise<Response | null> {
+    const url = new URL(request.url);
+    if (request.method !== "POST" || url.pathname !== "/v1/console/refresh") {
+      return null;
+    }
+
+    const sessionAuth = await authenticateByConsoleSession(request, env);
+    if (!sessionAuth) {
+      return errorResponse(401, "UNAUTHORIZED", "Missing console session.");
+    }
+    if (!sessionAuth.ok) {
+      return sessionAuth.response;
+    }
+
+    const secret = env.CONSOLE_SESSION_SECRET?.trim() ?? "";
+    if (!secret) {
+      return errorResponse(500, "CONFIG_MISSING", "CONSOLE_SESSION_SECRET is required.");
+    }
+
+    const session = await createConsoleSessionToken(sessionAuth.auth, secret);
+    const secure = url.protocol === "https:";
+    const response = jsonResponse({
+      refreshed: true,
+      expires_at: session.expiresAt
+    });
+    response.headers.append("set-cookie", buildSessionCookieValue(session.token, secure));
+    return response;
+  }
+
   async function handleConsoleSession(request: Request, env: Env): Promise<Response | null> {
     const url = new URL(request.url);
     if (request.method !== "GET" || url.pathname !== "/v1/console/session") {
@@ -1829,6 +1965,21 @@ export function createApp(options?: { store?: Store }) {
     if (!auth.ok) {
       return auth.response;
     }
+    let sessionExpiresAt: string | null = null;
+    const sessionToken = parseCookieValue(request.headers.get("cookie"), CONSOLE_SESSION_COOKIE_NAME);
+    if (sessionToken) {
+      const secret = env.CONSOLE_SESSION_SECRET?.trim() ?? "";
+      if (secret) {
+        try {
+          const payload = await verifyConsoleSessionToken(sessionToken, secret);
+          if (payload) {
+            sessionExpiresAt = new Date(payload.exp * 1000).toISOString();
+          }
+        } catch {
+          sessionExpiresAt = null;
+        }
+      }
+    }
 
     const store = resolveStore(env);
     if (!store) {
@@ -1838,7 +1989,8 @@ export function createApp(options?: { store?: Store }) {
           role: authRole(auth.auth),
           status: "ACTIVE"
         },
-        is_admin: auth.auth.isAdmin
+        is_admin: auth.auth.isAdmin,
+        session_expires_at: sessionExpiresAt
       });
     }
 
@@ -1848,7 +2000,8 @@ export function createApp(options?: { store?: Store }) {
     });
     return jsonResponse({
       user,
-      is_admin: auth.auth.isAdmin
+      is_admin: auth.auth.isAdmin,
+      session_expires_at: sessionExpiresAt
     });
   }
 
@@ -3364,6 +3517,7 @@ export function createApp(options?: { store?: Store }) {
         () => handleConsole(request),
         () => handleConsoleLogin(request, env),
         () => handleConsoleLogout(request),
+        () => handleConsoleRefresh(request, env),
         () => handleConsoleSession(request, env),
         () => handleOpenApiSpec(request),
         () => handleIngest(request, env, ctx, logger),
