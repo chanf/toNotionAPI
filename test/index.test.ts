@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { createApp, type Env, type ExecutionContextLike } from "../src/index";
 import { InMemoryStore } from "../src/store";
@@ -260,6 +260,68 @@ describe("workers backend api", () => {
     expect(afterRevoke.status).toBe(401);
   });
 
+  it("admin can manage user tokens via /v1/admin/users/{userId}/tokens", async () => {
+    const app = createApp({ store: new InMemoryStore() });
+    const ctx = new TestContext();
+
+    const createUser = await sendJson(app, ctx, "/v1/admin/users", "POST", {
+      user_id: "user-token-c",
+      display_name: "User Token C",
+      role: "USER"
+    });
+    expect(createUser.status).toBe(201);
+
+    const createToken = await sendJson(
+      app,
+      ctx,
+      "/v1/admin/users/user-token-c/tokens",
+      "POST",
+      {
+        label: "user-token-c-device",
+        scopes: ["items:read", "items:write"],
+        expires_at: null
+      }
+    );
+    expect(createToken.status).toBe(201);
+    const createTokenPayload = await createToken.json() as {
+      user_id: string;
+      token: string;
+      token_record: { id: string; user_id: string };
+    };
+    expect(createTokenPayload.user_id).toBe("user-token-c");
+    expect(createTokenPayload.token_record.user_id).toBe("user-token-c");
+    expect(createTokenPayload.token).toBeTruthy();
+
+    const listTokens = await send(app, ctx, "/v1/admin/users/user-token-c/tokens?active=true", {
+      method: "GET",
+      headers: AUTH_HEADER
+    });
+    expect(listTokens.status).toBe(200);
+    const listTokensPayload = await listTokens.json() as {
+      user_id: string;
+      tokens: Array<{ id: string }>;
+    };
+    expect(listTokensPayload.user_id).toBe("user-token-c");
+    expect(listTokensPayload.tokens.some((token) => token.id === createTokenPayload.token_record.id)).toBe(true);
+
+    const revokeToken = await send(
+      app,
+      ctx,
+      `/v1/admin/users/user-token-c/tokens/${createTokenPayload.token_record.id}/revoke`,
+      {
+        method: "POST",
+        headers: AUTH_HEADER
+      }
+    );
+    expect(revokeToken.status).toBe(200);
+
+    const blocked = await send(app, ctx, "/v1/items", {
+      method: "GET",
+      headers: { Authorization: `Bearer ${createTokenPayload.token}` }
+    });
+    expect(blocked.status).toBe(401);
+  });
+
   it("non-admin token cannot manage tokens", async () => {
     const app = createApp({ store: new InMemoryStore() });
     const ctx = new TestContext();
@@ -278,6 +340,12 @@ describe("workers backend api", () => {
       headers: { Authorization: `Bearer ${limitedToken}` }
     });
     expect(forbidden.status).toBe(403);
+
+    const forbiddenUserPath = await send(app, ctx, "/v1/admin/users/user-b/tokens", {
+      method: "GET",
+      headers: { Authorization: `Bearer ${limitedToken}` }
+    });
+    expect(forbiddenUserPath.status).toBe(403);
   });
 
   it("admin can create/list/update/delete users", async () => {
@@ -319,6 +387,45 @@ describe("workers backend api", () => {
     expect(remove.status).toBe(200);
     const removePayload = await remove.json() as { status: string };
     expect(removePayload.status).toBe("DELETED");
+  });
+
+  it("admin can list audit logs", async () => {
+    const app = createApp({ store: new InMemoryStore() });
+    const ctx = new TestContext();
+
+    const createUser = await sendJson(app, ctx, "/v1/admin/users", "POST", {
+      user_id: "audit-user",
+      display_name: "Audit User",
+      role: "USER"
+    });
+    expect(createUser.status).toBe(201);
+
+    const listLogs = await send(app, ctx, "/v1/admin/audit-logs?limit=20", {
+      method: "GET",
+      headers: AUTH_HEADER
+    });
+    expect(listLogs.status).toBe(200);
+    const listPayload = await listLogs.json() as {
+      logs: Array<{ action: string; target_type: string | null; target_id: string | null }>;
+    };
+    expect(listPayload.logs.length).toBeGreaterThan(0);
+    expect(
+      listPayload.logs.some((log) => log.action === "USER_CREATE" && log.target_id === "audit-user")
+    ).toBe(true);
+
+    const issueLimited = await sendJson(app, ctx, "/v1/admin/tokens", "POST", {
+      user_id: "limited-audit-view",
+      label: "limited-audit-view-token",
+      scopes: ["items:read"]
+    });
+    expect(issueLimited.status).toBe(201);
+    const issueLimitedPayload = await issueLimited.json() as { token: string };
+
+    const forbidden = await send(app, ctx, "/v1/admin/audit-logs", {
+      method: "GET",
+      headers: { Authorization: `Bearer ${issueLimitedPayload.token}` }
+    });
+    expect(forbidden.status).toBe(403);
   });
 
   it("supports /v1/me profile, token and notion settings endpoints", async () => {
@@ -420,6 +527,459 @@ describe("workers backend api", () => {
       envWithKey
     );
     expect(setTarget.status).toBe(200);
+  });
+
+  it("prefers user notion credential over global token for real sync", async () => {
+    const store = new InMemoryStore();
+    const app = createApp({ store });
+    const ctx = new TestContext();
+    const env: Env = {
+      WX2NOTION_DEV_TOKEN: "dev-token",
+      NOTION_MOCK: "false",
+      NOTION_API_TOKEN: "ntn_global_fallback_token",
+      NOTION_API_VERSION: "2022-06-28",
+      NOTION_API_BASE_URL: "https://api.notion.com/v1",
+      CREDENTIALS_ENCRYPTION_KEY: "test-encryption-key",
+      LOG_LEVEL: "error"
+    };
+
+    await connectNotion(app, ctx, env);
+    await setTargetPage(app, ctx, env);
+
+    const putCredential = await sendJson(
+      app,
+      ctx,
+      "/v1/me/notion-credentials",
+      "PUT",
+      {
+        notion_api_token: "ntn_user_token_123456",
+        notion_api_version: "2022-06-28",
+        notion_api_base_url: "https://api.notion.com/v1"
+      },
+      true,
+      env
+    );
+    expect(putCredential.status).toBe(200);
+
+    const calledAuthHeaders: string[] = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(typeof input === "string" ? input : input.toString());
+      const authHeader = new Headers(init?.headers).get("authorization");
+      if (authHeader) {
+        calledAuthHeaders.push(authHeader);
+      }
+
+      if (url.pathname.startsWith("/v1/pages/")) {
+        return new Response(JSON.stringify({ id: "target-page" }), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        });
+      }
+      if (url.pathname === "/v1/pages") {
+        return new Response(
+          JSON.stringify({
+            id: "page-user-1",
+            url: "https://www.notion.so/pageuser1"
+          }),
+          {
+            status: 200,
+            headers: { "content-type": "application/json" }
+          }
+        );
+      }
+      if (url.pathname.includes("/v1/blocks/") && url.pathname.endsWith("/children")) {
+        return new Response(JSON.stringify({ results: [] }), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        });
+      }
+      return new Response("Not found", { status: 404 });
+    });
+
+    vi.stubGlobal("fetch", fetchMock as typeof fetch);
+    try {
+      const ingest = await sendJson(
+        app,
+        ctx,
+        "/v1/ingest",
+        "POST",
+        {
+          client_item_id: "real-user-credential-1",
+          source_url: "https://mp.weixin.qq.com/s/user-credential",
+          raw_text: "user credential test content"
+        },
+        true,
+        env
+      );
+      expect(ingest.status).toBe(202);
+
+      const itemId = (await ingest.json() as { item_id: string }).item_id;
+      const synced = await waitForStatus(app, ctx, itemId, "SYNCED", env);
+      expect(synced.notion_page_id).toBe("page-user-1");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+
+    expect(calledAuthHeaders.some((header) => header === "Bearer ntn_user_token_123456")).toBe(true);
+    expect(calledAuthHeaders.some((header) => header === "Bearer ntn_global_fallback_token")).toBe(false);
+
+    const auditLogs = await store.listAuditLogs({ limit: 50 });
+    expect(auditLogs.some((entry) => entry.action === "NOTION_CREDENTIAL_UPSERT")).toBe(true);
+    expect(auditLogs.some((entry) => entry.action === "NOTION_TARGET_UPDATE")).toBe(true);
+  });
+
+  it("rejects disabled users even when token is active", async () => {
+    const store = new InMemoryStore();
+    const app = createApp({ store });
+    const ctx = new TestContext();
+
+    const issue = await sendJson(app, ctx, "/v1/admin/tokens", "POST", {
+      user_id: "disabled-user",
+      label: "disabled-user-token",
+      scopes: ["items:read", "items:write"]
+    });
+    expect(issue.status).toBe(201);
+    const issuePayload = await issue.json() as { token: string };
+
+    const disable = await sendJson(app, ctx, "/v1/admin/users/disabled-user", "PATCH", {
+      status: "DISABLED"
+    });
+    expect(disable.status).toBe(200);
+
+    const blocked = await send(app, ctx, "/v1/me", {
+      method: "GET",
+      headers: { Authorization: `Bearer ${issuePayload.token}` }
+    });
+    expect(blocked.status).toBe(403);
+    const blockedPayload = await blocked.json() as { error: { code: string } };
+    expect(blockedPayload.error.code).toBe("USER_INACTIVE");
+  });
+
+  it("returns 404 for unknown route", async () => {
+    const app = createApp({ store: new InMemoryStore() });
+    const ctx = new TestContext();
+
+    const response = await send(app, ctx, "/v1/unknown-route", {
+      method: "GET",
+      headers: AUTH_HEADER
+    });
+    expect(response.status).toBe(404);
+    const payload = await response.json() as { error: { code: string } };
+    expect(payload.error.code).toBe("NOT_FOUND");
+  });
+
+  it("validates list item query parameters", async () => {
+    const app = createApp({ store: new InMemoryStore() });
+    const ctx = new TestContext();
+
+    const invalidStatus = await send(app, ctx, "/v1/items?status=NOT_EXISTS", {
+      method: "GET",
+      headers: AUTH_HEADER
+    });
+    expect(invalidStatus.status).toBe(400);
+
+    const invalidPageSizeLow = await send(app, ctx, "/v1/items?page_size=0", {
+      method: "GET",
+      headers: AUTH_HEADER
+    });
+    expect(invalidPageSizeLow.status).toBe(400);
+
+    const invalidPageSizeHigh = await send(app, ctx, "/v1/items?page_size=101", {
+      method: "GET",
+      headers: AUTH_HEADER
+    });
+    expect(invalidPageSizeHigh.status).toBe(400);
+  });
+
+  it("validates notion auth callback parameters and oauth state", async () => {
+    const app = createApp({ store: new InMemoryStore() });
+    const ctx = new TestContext();
+
+    const missingCode = await send(app, ctx, "/v1/auth/notion/callback?state=state-only", {
+      method: "GET"
+    });
+    expect(missingCode.status).toBe(400);
+
+    const invalidState = await send(app, ctx, "/v1/auth/notion/callback?code=demo&state=not-found", {
+      method: "GET"
+    });
+    expect(invalidState.status).toBe(400);
+  });
+
+  it("validates admin user create/update/delete edge cases", async () => {
+    const app = createApp({ store: new InMemoryStore() });
+    const ctx = new TestContext();
+
+    const invalidRole = await sendJson(app, ctx, "/v1/admin/users", "POST", {
+      user_id: "edge-user",
+      role: "ROOT"
+    });
+    expect(invalidRole.status).toBe(400);
+
+    const create = await sendJson(app, ctx, "/v1/admin/users", "POST", {
+      user_id: "edge-user",
+      role: "USER"
+    });
+    expect(create.status).toBe(201);
+
+    const duplicate = await sendJson(app, ctx, "/v1/admin/users", "POST", {
+      user_id: "edge-user",
+      role: "USER"
+    });
+    expect(duplicate.status).toBe(409);
+
+    const emptyPatch = await sendJson(app, ctx, "/v1/admin/users/edge-user", "PATCH", {});
+    expect(emptyPatch.status).toBe(400);
+
+    const invalidDisplayNamePatch = await sendJson(app, ctx, "/v1/admin/users/edge-user", "PATCH", {
+      display_name: 123
+    });
+    expect(invalidDisplayNamePatch.status).toBe(400);
+
+    const notFoundPatch = await sendJson(app, ctx, "/v1/admin/users/not-found", "PATCH", {
+      status: "DISABLED"
+    });
+    expect(notFoundPatch.status).toBe(404);
+
+    const selfDelete = await send(app, ctx, "/v1/admin/users/demo-user", {
+      method: "DELETE",
+      headers: AUTH_HEADER
+    });
+    expect(selfDelete.status).toBe(400);
+  });
+
+  it("validates me token constraints for non-admin users", async () => {
+    const app = createApp({ store: new InMemoryStore() });
+    const ctx = new TestContext();
+
+    const issueLimited = await sendJson(app, ctx, "/v1/admin/tokens", "POST", {
+      user_id: "limited-user",
+      label: "limited-user-token",
+      scopes: ["items:read"]
+    });
+    expect(issueLimited.status).toBe(201);
+    const limitedToken = (await issueLimited.json() as { token: string }).token;
+
+    const forbiddenPrivileged = await sendJson(
+      app,
+      ctx,
+      "/v1/me/tokens",
+      "POST",
+      {
+        label: "forbidden-admin-scope",
+        scopes: ["admin:tokens"]
+      },
+      false,
+      DEV_ENV
+    );
+    expect(forbiddenPrivileged.status).toBe(401);
+
+    const forbiddenWithUserToken = await send(
+      app,
+      ctx,
+      "/v1/me/tokens",
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          Authorization: `Bearer ${limitedToken}`
+        },
+        body: JSON.stringify({
+          label: "forbidden-admin-scope",
+          scopes: ["admin:tokens"]
+        })
+      }
+    );
+    expect(forbiddenWithUserToken.status).toBe(403);
+
+    const invalidExpiresAt = await send(
+      app,
+      ctx,
+      "/v1/me/tokens",
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          Authorization: `Bearer ${limitedToken}`
+        },
+        body: JSON.stringify({
+          label: "invalid-expire",
+          scopes: ["items:read"],
+          expires_at: "not-a-date"
+        })
+      }
+    );
+    expect(invalidExpiresAt.status).toBe(400);
+  });
+
+  it("rejects expired tokens", async () => {
+    const app = createApp({ store: new InMemoryStore() });
+    const ctx = new TestContext();
+
+    const issueExpired = await sendJson(app, ctx, "/v1/admin/tokens", "POST", {
+      user_id: "expired-user",
+      label: "expired-token",
+      scopes: ["items:read"],
+      expires_at: "2000-01-01T00:00:00.000Z"
+    });
+    expect(issueExpired.status).toBe(201);
+    const token = (await issueExpired.json() as { token: string }).token;
+
+    const me = await send(app, ctx, "/v1/me", {
+      method: "GET",
+      headers: { Authorization: `Bearer ${token}` }
+    });
+    expect(me.status).toBe(401);
+    const payload = await me.json() as { error: { code: string } };
+    expect(payload.error.code).toBe("TOKEN_EXPIRED");
+  });
+
+  it("validates notion credential and target endpoints", async () => {
+    const app = createApp({ store: new InMemoryStore() });
+    const ctx = new TestContext();
+
+    const missingKeyEnv: Env = {
+      ...DEV_ENV,
+      CREDENTIALS_ENCRYPTION_KEY: undefined
+    };
+    const missingKey = await sendJson(
+      app,
+      ctx,
+      "/v1/me/notion-credentials",
+      "PUT",
+      {
+        notion_api_token: "ntn_missing_key"
+      },
+      true,
+      missingKeyEnv
+    );
+    expect(missingKey.status).toBe(500);
+
+    const envWithKey: Env = {
+      ...DEV_ENV,
+      CREDENTIALS_ENCRYPTION_KEY: "test-encryption-key"
+    };
+    const missingToken = await sendJson(
+      app,
+      ctx,
+      "/v1/me/notion-credentials",
+      "PUT",
+      {
+        notion_api_version: "2022-06-28"
+      },
+      true,
+      envWithKey
+    );
+    expect(missingToken.status).toBe(400);
+
+    const missingPageId = await sendJson(
+      app,
+      ctx,
+      "/v1/me/notion-target",
+      "PUT",
+      { page_title: "missing-page-id" },
+      true,
+      envWithKey
+    );
+    expect(missingPageId.status).toBe(400);
+  });
+
+  it("validates admin token and audit query boundaries", async () => {
+    const app = createApp({ store: new InMemoryStore() });
+    const ctx = new TestContext();
+
+    const invalidActive = await send(app, ctx, "/v1/admin/users/demo-user/tokens?active=maybe", {
+      method: "GET",
+      headers: AUTH_HEADER
+    });
+    expect(invalidActive.status).toBe(400);
+
+    const invalidLimit = await send(app, ctx, "/v1/admin/audit-logs?limit=0", {
+      method: "GET",
+      headers: AUTH_HEADER
+    });
+    expect(invalidLimit.status).toBe(400);
+
+    const invalidExpiresAt = await sendJson(
+      app,
+      ctx,
+      "/v1/admin/users/demo-user/tokens",
+      "POST",
+      {
+        label: "invalid-date",
+        expires_at: "bad-date"
+      }
+    );
+    expect(invalidExpiresAt.status).toBe(400);
+
+    const createForMissingUser = await sendJson(
+      app,
+      ctx,
+      "/v1/admin/users/not-found/tokens",
+      "POST",
+      {
+        label: "missing-user",
+        scopes: ["items:read"]
+      }
+    );
+    expect(createForMissingUser.status).toBe(404);
+  });
+
+  it("returns 404 when revoking token through mismatched user path", async () => {
+    const app = createApp({ store: new InMemoryStore() });
+    const ctx = new TestContext();
+
+    const createUserA = await sendJson(app, ctx, "/v1/admin/users", "POST", {
+      user_id: "user-a-revoke",
+      role: "USER"
+    });
+    expect(createUserA.status).toBe(201);
+    const createUserB = await sendJson(app, ctx, "/v1/admin/users", "POST", {
+      user_id: "user-b-revoke",
+      role: "USER"
+    });
+    expect(createUserB.status).toBe(201);
+
+    const createTokenA = await sendJson(
+      app,
+      ctx,
+      "/v1/admin/users/user-a-revoke/tokens",
+      "POST",
+      {
+        label: "token-a",
+        scopes: ["items:read"]
+      }
+    );
+    expect(createTokenA.status).toBe(201);
+    const tokenId = (await createTokenA.json() as { token_record: { id: string } }).token_record.id;
+
+    const revokeWithWrongUser = await send(
+      app,
+      ctx,
+      `/v1/admin/users/user-b-revoke/tokens/${tokenId}/revoke`,
+      {
+        method: "POST",
+        headers: AUTH_HEADER
+      }
+    );
+    expect(revokeWithWrongUser.status).toBe(404);
+  });
+
+  it("returns not found for missing item detail and retry", async () => {
+    const app = createApp({ store: new InMemoryStore() });
+    const ctx = new TestContext();
+
+    const getMissing = await send(app, ctx, "/v1/items/missing-item", {
+      method: "GET",
+      headers: AUTH_HEADER
+    });
+    expect(getMissing.status).toBe(404);
+
+    const retryMissing = await send(app, ctx, "/v1/items/missing-item/retry", {
+      method: "POST",
+      headers: AUTH_HEADER
+    });
+    expect(retryMissing.status).toBe(404);
   });
 
   it("ingest -> synced happy path", async () => {

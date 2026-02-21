@@ -69,6 +69,23 @@ export interface UserNotionCredential {
   updated_at: string;
 }
 
+export interface UserNotionCredentialSecret extends UserNotionCredential {
+  token_ciphertext: string;
+  token_iv: string;
+  token_tag: string;
+}
+
+export interface AuditLog {
+  id: string;
+  actor_user_id: string | null;
+  actor_role: string | null;
+  action: string;
+  target_type: string | null;
+  target_id: string | null;
+  metadata_json: string | null;
+  created_at: string;
+}
+
 export interface OAuthState {
   state: string;
   user_id: string;

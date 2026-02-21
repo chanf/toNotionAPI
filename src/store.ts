@@ -1,5 +1,6 @@
 import type { D1Database } from "./d1";
 import type {
+  AuditLog,
   AppUser,
   AppUserRole,
   AppUserStatus,
@@ -9,6 +10,7 @@ import type {
   OAuthState,
   SyncError,
   UserNotionCredential,
+  UserNotionCredentialSecret,
   UserSettings
 } from "./types";
 import { normalizeUrl, nowIso, randomId, sha256Hex } from "./utils";
@@ -85,6 +87,17 @@ type UserNotionCredentialRow = {
   api_base_url: string;
   created_at: string;
   updated_at: string;
+};
+
+type AuditLogRow = {
+  id: string;
+  actor_user_id: string | null;
+  actor_role: string | null;
+  action: string;
+  target_type: string | null;
+  target_id: string | null;
+  metadata_json: string | null;
+  created_at: string;
 };
 
 function clone<T>(value: T): T {
@@ -192,6 +205,28 @@ function rowToUserNotionCredential(row: UserNotionCredentialRow): UserNotionCred
   };
 }
 
+function rowToUserNotionCredentialSecret(row: UserNotionCredentialRow): UserNotionCredentialSecret {
+  return {
+    ...rowToUserNotionCredential(row),
+    token_ciphertext: row.token_ciphertext,
+    token_iv: row.token_iv,
+    token_tag: row.token_tag
+  };
+}
+
+function rowToAuditLog(row: AuditLogRow): AuditLog {
+  return {
+    id: row.id,
+    actor_user_id: row.actor_user_id,
+    actor_role: row.actor_role,
+    action: row.action,
+    target_type: row.target_type,
+    target_id: row.target_id,
+    metadata_json: row.metadata_json,
+    created_at: row.created_at
+  };
+}
+
 async function checkedRun(db: D1Database, query: string, params: unknown[] = []): Promise<void> {
   const result = await db.prepare(query).bind(...params).run();
   if (!result.success) {
@@ -280,7 +315,17 @@ export interface Store {
     apiBaseUrl: string;
   }): Promise<UserNotionCredential>;
   getUserNotionCredential(userId: string): Promise<UserNotionCredential | null>;
+  getUserNotionCredentialSecret(userId: string): Promise<UserNotionCredentialSecret | null>;
   deleteUserNotionCredential(userId: string): Promise<boolean>;
+  appendAuditLog(input: {
+    actorUserId: string | null;
+    actorRole: string | null;
+    action: string;
+    targetType?: string | null;
+    targetId?: string | null;
+    metadataJson?: string | null;
+  }): Promise<void>;
+  listAuditLogs(input?: { limit?: number }): Promise<AuditLog[]>;
   issueAccessToken(input: {
     userId: string;
     label: string | null;
@@ -310,6 +355,7 @@ export class InMemoryStore implements Store {
   >();
   private accessTokens = new Map<string, ApiAccessToken>();
   private tokenHashIndex = new Map<string, string>();
+  private auditLogs: AuditLog[] = [];
 
   private getUrlIndexKey(userId: string, normalizedUrl: string): string {
     return `${userId}::${normalizedUrl}`;
@@ -615,8 +661,42 @@ export class InMemoryStore implements Store {
     return row ? rowToUserNotionCredential(row) : null;
   }
 
+  async getUserNotionCredentialSecret(userId: string): Promise<UserNotionCredentialSecret | null> {
+    const row = this.userNotionCredentials.get(userId);
+    return row ? rowToUserNotionCredentialSecret(row) : null;
+  }
+
   async deleteUserNotionCredential(userId: string): Promise<boolean> {
     return this.userNotionCredentials.delete(userId);
+  }
+
+  async appendAuditLog(input: {
+    actorUserId: string | null;
+    actorRole: string | null;
+    action: string;
+    targetType?: string | null;
+    targetId?: string | null;
+    metadataJson?: string | null;
+  }): Promise<void> {
+    const log: AuditLog = {
+      id: randomId(),
+      actor_user_id: input.actorUserId,
+      actor_role: input.actorRole,
+      action: input.action,
+      target_type: input.targetType ?? null,
+      target_id: input.targetId ?? null,
+      metadata_json: input.metadataJson ?? null,
+      created_at: nowIso()
+    };
+    this.auditLogs.push(log);
+  }
+
+  async listAuditLogs(input?: { limit?: number }): Promise<AuditLog[]> {
+    const limit = typeof input?.limit === "number" && input.limit > 0 ? Math.floor(input.limit) : 100;
+    return [...this.auditLogs]
+      .sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at))
+      .slice(0, limit)
+      .map(clone);
   }
 
   async issueAccessToken(input: {
@@ -1161,6 +1241,18 @@ export class D1Store implements Store {
     return row ? rowToUserNotionCredential(row) : null;
   }
 
+  async getUserNotionCredentialSecret(userId: string): Promise<UserNotionCredentialSecret | null> {
+    const row = await checkedFirst<UserNotionCredentialRow>(
+      this.db,
+      `SELECT user_id, token_ciphertext, token_iv, token_tag, token_hint, api_version, api_base_url, created_at, updated_at
+       FROM user_notion_credentials
+       WHERE user_id = ?
+       LIMIT 1`,
+      [userId]
+    );
+    return row ? rowToUserNotionCredentialSecret(row) : null;
+  }
+
   async deleteUserNotionCredential(userId: string): Promise<boolean> {
     const existing = await checkedFirst<{ user_id: string }>(
       this.db,
@@ -1172,6 +1264,45 @@ export class D1Store implements Store {
     }
     await checkedRun(this.db, `DELETE FROM user_notion_credentials WHERE user_id = ?`, [userId]);
     return true;
+  }
+
+  async appendAuditLog(input: {
+    actorUserId: string | null;
+    actorRole: string | null;
+    action: string;
+    targetType?: string | null;
+    targetId?: string | null;
+    metadataJson?: string | null;
+  }): Promise<void> {
+    await checkedRun(
+      this.db,
+      `INSERT INTO audit_logs (
+        id, actor_user_id, actor_role, action, target_type, target_id, metadata_json, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        randomId(),
+        input.actorUserId,
+        input.actorRole,
+        input.action,
+        input.targetType ?? null,
+        input.targetId ?? null,
+        input.metadataJson ?? null,
+        nowIso()
+      ]
+    );
+  }
+
+  async listAuditLogs(input?: { limit?: number }): Promise<AuditLog[]> {
+    const limit = typeof input?.limit === "number" && input.limit > 0 ? Math.floor(input.limit) : 100;
+    const rows = await checkedAll<AuditLogRow>(
+      this.db,
+      `SELECT id, actor_user_id, actor_role, action, target_type, target_id, metadata_json, created_at
+       FROM audit_logs
+       ORDER BY created_at DESC
+       LIMIT ?`,
+      [limit]
+    );
+    return rows.map(rowToAuditLog);
   }
 
   async issueAccessToken(input: {

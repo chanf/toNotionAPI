@@ -104,6 +104,28 @@ function bytesToBase64(bytes: Uint8Array): string {
   return btoa(binary);
 }
 
+function base64ToBytes(input: string): Uint8Array {
+  const maybeBuffer = (globalThis as unknown as {
+    Buffer?: { from(data: string, encoding: string): Uint8Array };
+  }).Buffer;
+  if (maybeBuffer) {
+    return new Uint8Array(maybeBuffer.from(input, "base64"));
+  }
+  const binary = atob(input);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return bytes;
+}
+
+function concatBytes(left: Uint8Array, right: Uint8Array): Uint8Array {
+  const merged = new Uint8Array(left.length + right.length);
+  merged.set(left, 0);
+  merged.set(right, left.length);
+  return merged;
+}
+
 async function encryptSecret(plain: string, rawKey: string): Promise<{
   tokenCiphertext: string;
   tokenIv: string;
@@ -140,6 +162,38 @@ async function encryptSecret(plain: string, rawKey: string): Promise<{
     tokenIv: bytesToBase64(iv),
     tokenTag: bytesToBase64(cipherBytes.slice(-tagLength))
   };
+}
+
+async function decryptSecret(input: {
+  tokenCiphertext: string;
+  tokenIv: string;
+  tokenTag: string;
+}, rawKey: string): Promise<string> {
+  if (!globalThis.crypto?.subtle) {
+    throw new Error("WebCrypto API is unavailable.");
+  }
+  const encodedKey = new TextEncoder().encode(rawKey);
+  const keyDigest = await globalThis.crypto.subtle.digest("SHA-256", encodedKey);
+  const cryptoKey = await globalThis.crypto.subtle.importKey(
+    "raw",
+    keyDigest,
+    { name: "AES-GCM" },
+    false,
+    ["decrypt"]
+  );
+  const iv = base64ToBytes(input.tokenIv);
+  const cipherBytes = base64ToBytes(input.tokenCiphertext);
+  const tagBytes = base64ToBytes(input.tokenTag);
+  const encrypted = concatBytes(cipherBytes, tagBytes);
+  const plainBuffer = await globalThis.crypto.subtle.decrypt(
+    {
+      name: "AES-GCM",
+      iv: iv as unknown as BufferSource
+    },
+    cryptoKey,
+    encrypted as BufferSource
+  );
+  return new TextDecoder().decode(new Uint8Array(plainBuffer));
 }
 
 function parseEnvBoolean(raw: string | undefined): boolean {
@@ -449,7 +503,44 @@ function buildConsoleHtml(): string {
           </select>
           <button id="listUsersBtn">刷新用户列表</button>
         </div>
+        <div class="row">
+          <input id="manageUserIdInput" placeholder="目标 user_id" />
+          <select id="manageUserStatusSelect">
+            <option value="ACTIVE">ACTIVE</option>
+            <option value="DISABLED">DISABLED</option>
+            <option value="DELETED">DELETED</option>
+          </select>
+          <button id="updateUserStatusBtn" class="warn">更新状态</button>
+          <button id="deleteUserBtn" class="danger">删除用户</button>
+        </div>
         <pre id="adminUsersResult">暂无结果</pre>
+        <h2>超管：用户 Token 管理</h2>
+        <div class="row">
+          <input id="adminTokenUserIdInput" placeholder="目标 user_id" />
+          <input id="adminTokenLabelInput" placeholder="label（可选）" />
+          <input id="adminTokenScopesInput" value="items:read,items:write" placeholder="scopes，逗号分隔" style="flex:1; min-width:180px;" />
+        </div>
+        <div class="row">
+          <input id="adminTokenExpiresInput" placeholder="expires_at（ISO，可选）" style="flex:1; min-width:220px;" />
+          <select id="adminTokenActiveFilter">
+            <option value="">全部</option>
+            <option value="true">active=true</option>
+            <option value="false">active=false</option>
+          </select>
+          <button id="createUserTokenBtn" class="primary">创建用户 token</button>
+          <button id="listUserTokensBtn">查询用户 token</button>
+        </div>
+        <div class="row">
+          <input id="adminRevokeTokenIdInput" placeholder="待吊销 token_id" style="flex:1; min-width:220px;" />
+          <button id="revokeUserTokenBtn" class="danger">吊销用户 token</button>
+        </div>
+        <pre id="adminUserTokensResult">暂无结果</pre>
+        <h2>超管：审计日志</h2>
+        <div class="row">
+          <input id="auditLimitInput" value="50" placeholder="limit (1-500)" />
+          <button id="listAuditLogsBtn">刷新审计日志</button>
+        </div>
+        <pre id="auditLogsResult">暂无结果</pre>
       </div>
     </div>
 
@@ -463,6 +554,8 @@ function buildConsoleHtml(): string {
       const selfTokenResultEl = document.getElementById("selfTokenResult");
       const notionResultEl = document.getElementById("notionResult");
       const adminUsersResultEl = document.getElementById("adminUsersResult");
+      const adminUserTokensResultEl = document.getElementById("adminUserTokensResult");
+      const auditLogsResultEl = document.getElementById("auditLogsResult");
 
       function getToken() {
         return (tokenInputEl.value || "").trim();
@@ -514,6 +607,10 @@ function buildConsoleHtml(): string {
           meProfileEl.innerHTML = chips.join("");
           adminPanelEl.style.display = isAdmin ? "block" : "none";
           setStatus("登录成功（" + (isAdmin ? "超管" : "普通用户") + "）");
+          if (isAdmin) {
+            await refreshUsers();
+            await refreshAuditLogs();
+          }
         } catch (error) {
           meProfileEl.textContent = "加载失败: " + String(error);
           adminPanelEl.style.display = "none";
@@ -546,6 +643,35 @@ function buildConsoleHtml(): string {
           adminUsersResultEl.textContent = pretty({ status: resp.status, body });
         } catch (error) {
           adminUsersResultEl.textContent = String(error);
+        }
+      }
+
+      async function refreshAdminUserTokens() {
+        const userId = (document.getElementById("adminTokenUserIdInput").value || "").trim();
+        if (!userId) {
+          adminUserTokensResultEl.textContent = "请先输入目标 user_id";
+          return;
+        }
+        const active = (document.getElementById("adminTokenActiveFilter").value || "").trim();
+        const query = active ? ("?active=" + encodeURIComponent(active)) : "";
+        try {
+          const { resp, body } = await api("/v1/admin/users/" + encodeURIComponent(userId) + "/tokens" + query, {
+            method: "GET"
+          });
+          adminUserTokensResultEl.textContent = pretty({ status: resp.status, body });
+        } catch (error) {
+          adminUserTokensResultEl.textContent = String(error);
+        }
+      }
+
+      async function refreshAuditLogs() {
+        const limitRaw = (document.getElementById("auditLimitInput").value || "").trim();
+        const query = limitRaw ? ("?limit=" + encodeURIComponent(limitRaw)) : "";
+        try {
+          const { resp, body } = await api("/v1/admin/audit-logs" + query, { method: "GET" });
+          auditLogsResultEl.textContent = pretty({ status: resp.status, body });
+        } catch (error) {
+          auditLogsResultEl.textContent = String(error);
         }
       }
 
@@ -659,6 +785,99 @@ function buildConsoleHtml(): string {
       });
 
       document.getElementById("listUsersBtn").addEventListener("click", refreshUsers);
+      document.getElementById("listUserTokensBtn").addEventListener("click", refreshAdminUserTokens);
+
+      document.getElementById("createUserTokenBtn").addEventListener("click", async () => {
+        const userId = (document.getElementById("adminTokenUserIdInput").value || "").trim();
+        const label = (document.getElementById("adminTokenLabelInput").value || "").trim();
+        const scopes = (document.getElementById("adminTokenScopesInput").value || "").trim();
+        const expiresAt = (document.getElementById("adminTokenExpiresInput").value || "").trim();
+        if (!userId) {
+          adminUserTokensResultEl.textContent = "请先输入目标 user_id";
+          return;
+        }
+        try {
+          const { resp, body } = await api("/v1/admin/users/" + encodeURIComponent(userId) + "/tokens", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              label: label || null,
+              scopes: scopes || null,
+              expires_at: expiresAt || null
+            })
+          });
+          adminUserTokensResultEl.textContent = pretty({ status: resp.status, body });
+          if (body && body.token_record && body.token_record.id) {
+            document.getElementById("adminRevokeTokenIdInput").value = body.token_record.id;
+          }
+        } catch (error) {
+          adminUserTokensResultEl.textContent = String(error);
+        }
+      });
+
+      document.getElementById("revokeUserTokenBtn").addEventListener("click", async () => {
+        const userId = (document.getElementById("adminTokenUserIdInput").value || "").trim();
+        const tokenId = (document.getElementById("adminRevokeTokenIdInput").value || "").trim();
+        if (!userId) {
+          adminUserTokensResultEl.textContent = "请先输入目标 user_id";
+          return;
+        }
+        if (!tokenId) {
+          adminUserTokensResultEl.textContent = "请先输入待吊销 token_id";
+          return;
+        }
+        try {
+          const { resp, body } = await api(
+            "/v1/admin/users/" + encodeURIComponent(userId) + "/tokens/" + encodeURIComponent(tokenId) + "/revoke",
+            { method: "POST" }
+          );
+          adminUserTokensResultEl.textContent = pretty({ status: resp.status, body });
+          await refreshAdminUserTokens();
+        } catch (error) {
+          adminUserTokensResultEl.textContent = String(error);
+        }
+      });
+      document.getElementById("listAuditLogsBtn").addEventListener("click", refreshAuditLogs);
+
+      document.getElementById("updateUserStatusBtn").addEventListener("click", async () => {
+        const userId = (document.getElementById("manageUserIdInput").value || "").trim();
+        const status = (document.getElementById("manageUserStatusSelect").value || "").trim();
+        if (!userId) {
+          adminUsersResultEl.textContent = "请先输入目标 user_id";
+          return;
+        }
+        try {
+          const { resp, body } = await api("/v1/admin/users/" + encodeURIComponent(userId), {
+            method: "PATCH",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ status })
+          });
+          adminUsersResultEl.textContent = pretty({ status: resp.status, body });
+          await refreshUsers();
+        } catch (error) {
+          adminUsersResultEl.textContent = String(error);
+        }
+      });
+
+      document.getElementById("deleteUserBtn").addEventListener("click", async () => {
+        const userId = (document.getElementById("manageUserIdInput").value || "").trim();
+        if (!userId) {
+          adminUsersResultEl.textContent = "请先输入目标 user_id";
+          return;
+        }
+        if (!confirm("确认删除用户 " + userId + " 吗？")) {
+          return;
+        }
+        try {
+          const { resp, body } = await api("/v1/admin/users/" + encodeURIComponent(userId), {
+            method: "DELETE"
+          });
+          adminUsersResultEl.textContent = pretty({ status: resp.status, body });
+          await refreshUsers();
+        } catch (error) {
+          adminUsersResultEl.textContent = String(error);
+        }
+      });
 
       (async function bootstrap() {
         const saved = localStorage.getItem(TOKEN_KEY) || "";
@@ -710,6 +929,78 @@ function createStoreResolver(overrideStore?: Store) {
 export function createApp(options?: { store?: Store }) {
   const resolveStore = createStoreResolver(options?.store);
 
+  function authRole(auth: AuthContext): AppUserRole {
+    return canManageUsers(auth.scopes) ? "SUPER_ADMIN" : "USER";
+  }
+
+  function toMetadataJson(metadata: Record<string, unknown> | undefined): string | null {
+    if (!metadata) {
+      return null;
+    }
+    try {
+      return JSON.stringify(metadata);
+    } catch {
+      return null;
+    }
+  }
+
+  async function appendAuditLog(
+    store: Store,
+    input: {
+      actor: AuthContext;
+      action: string;
+      targetType?: string;
+      targetId?: string | null;
+      metadata?: Record<string, unknown>;
+    }
+  ): Promise<void> {
+    await store.appendAuditLog({
+      actorUserId: input.actor.userId,
+      actorRole: authRole(input.actor),
+      action: input.action,
+      targetType: input.targetType ?? null,
+      targetId: input.targetId ?? null,
+      metadataJson: toMetadataJson(input.metadata)
+    });
+  }
+
+  async function resolveNotionRuntimeForUser(
+    store: Store,
+    env: Env,
+    userId: string
+  ): Promise<NotionRuntimeInput> {
+    const fallbackRuntime = resolveNotionRuntime(env);
+    const credential = await store.getUserNotionCredentialSecret(userId);
+    if (!credential) {
+      return fallbackRuntime;
+    }
+    const rawKey = env.CREDENTIALS_ENCRYPTION_KEY?.trim() ?? "";
+    if (!rawKey) {
+      return fallbackRuntime;
+    }
+    try {
+      const apiToken = (await decryptSecret(
+        {
+          tokenCiphertext: credential.token_ciphertext,
+          tokenIv: credential.token_iv,
+          tokenTag: credential.token_tag
+        },
+        rawKey
+      )).trim();
+      if (!apiToken) {
+        return fallbackRuntime;
+      }
+      return {
+        ...fallbackRuntime,
+        apiToken,
+        apiVersion: credential.api_version || fallbackRuntime.apiVersion,
+        apiBaseUrl: credential.api_base_url || fallbackRuntime.apiBaseUrl
+      };
+    } catch {
+      return fallbackRuntime;
+    }
+  }
+
   async function requireUserId(request: Request, env: Env): Promise<AuthResult> {
     const token = parseBearerToken(request.headers.get("authorization"));
     if (!token) {
@@ -753,6 +1044,14 @@ export function createApp(options?: { store?: Store }) {
         return {
           ok: false,
           response: errorResponse(401, "TOKEN_EXPIRED", "Access token has expired.")
+        };
+      }
+
+      const user = await store.getUser(tokenRecord.user_id);
+      if (user && user.status !== "ACTIVE") {
+        return {
+          ok: false,
+          response: errorResponse(403, "USER_INACTIVE", "Current user is disabled or deleted.")
         };
       }
 
@@ -857,9 +1156,9 @@ export function createApp(options?: { store?: Store }) {
     }
     const clientItemId = payload.client_item_id;
     const sourceUrl = payload.source_url;
-    const notionRuntime = resolveNotionRuntime(env);
 
     return withStore(env, async (store) => {
+      const notionRuntime = await resolveNotionRuntimeForUser(store, env, auth.auth.userId);
       const result = await store.ingestItem({
         userId: auth.auth.userId,
         clientItemId,
@@ -984,9 +1283,9 @@ export function createApp(options?: { store?: Store }) {
     }
 
     const itemId = match[1];
-    const notionRuntime = resolveNotionRuntime(env);
 
     return withStore(env, async (store) => {
+      const notionRuntime = await resolveNotionRuntimeForUser(store, env, auth.auth.userId);
       const existing = await store.getItem({ userId: auth.auth.userId, itemId });
       if (!existing) {
         return errorResponse(404, "NOT_FOUND", "Item not found.");
@@ -1126,6 +1425,16 @@ export function createApp(options?: { store?: Store }) {
         targetPageId: pageId,
         targetPageTitle: pageTitle
       });
+      await appendAuditLog(store, {
+        actor: auth.auth,
+        action: "NOTION_TARGET_UPDATE",
+        targetType: "user_settings",
+        targetId: auth.auth.userId,
+        metadata: {
+          page_id: settings.target_page_id,
+          page_title: settings.target_page_title
+        }
+      });
       return jsonResponse({
         page_id: settings.target_page_id,
         page_title: settings.target_page_title
@@ -1178,6 +1487,16 @@ export function createApp(options?: { store?: Store }) {
         userId,
         role: roleRaw,
         displayName
+      });
+      await appendAuditLog(store, {
+        actor: auth.auth,
+        action: "USER_CREATE",
+        targetType: "app_user",
+        targetId: user.id,
+        metadata: {
+          role: user.role,
+          status: user.status
+        }
       });
       return jsonResponse({ user }, 201);
     });
@@ -1267,6 +1586,16 @@ export function createApp(options?: { store?: Store }) {
       if (!user) {
         return errorResponse(404, "NOT_FOUND", "User not found.");
       }
+      await appendAuditLog(store, {
+        actor: auth.auth,
+        action: "USER_UPDATE",
+        targetType: "app_user",
+        targetId: user.id,
+        metadata: {
+          status: user.status,
+          display_name: user.display_name
+        }
+      });
       return jsonResponse({ user });
     });
   }
@@ -1297,6 +1626,12 @@ export function createApp(options?: { store?: Store }) {
       if (!deleted) {
         return errorResponse(404, "NOT_FOUND", "User not found.");
       }
+      await appendAuditLog(store, {
+        actor: auth.auth,
+        action: "USER_DELETE",
+        targetType: "app_user",
+        targetId: match[1]
+      });
       return jsonResponse({
         user_id: match[1],
         status: "DELETED"
@@ -1380,13 +1715,24 @@ export function createApp(options?: { store?: Store }) {
     return withStore(env, async (store) => {
       await store.ensureUser({
         userId: auth.auth.userId,
-        role: canManageUsers(auth.auth.scopes) ? "SUPER_ADMIN" : "USER"
+        role: authRole(auth.auth)
       });
       const issued = await store.issueAccessToken({
         userId: auth.auth.userId,
         label,
         scopes,
         expiresAt
+      });
+      await appendAuditLog(store, {
+        actor: auth.auth,
+        action: "TOKEN_CREATE",
+        targetType: "api_access_token",
+        targetId: issued.token.id,
+        metadata: {
+          user_id: issued.token.user_id,
+          scopes: issued.token.scopes,
+          expires_at: issued.token.expires_at
+        }
       });
       return jsonResponse(
         {
@@ -1419,6 +1765,12 @@ export function createApp(options?: { store?: Store }) {
         return errorResponse(404, "NOT_FOUND", "Token not found.");
       }
       await store.revokeAccessToken({ tokenId });
+      await appendAuditLog(store, {
+        actor: auth.auth,
+        action: "TOKEN_REVOKE",
+        targetType: "api_access_token",
+        targetId: tokenId
+      });
       return jsonResponse({
         token_id: tokenId,
         status: "REVOKED"
@@ -1487,7 +1839,7 @@ export function createApp(options?: { store?: Store }) {
     return withStore(env, async (store) => {
       await store.ensureUser({
         userId: auth.auth.userId,
-        role: canManageUsers(auth.auth.scopes) ? "SUPER_ADMIN" : "USER"
+        role: authRole(auth.auth)
       });
       const credential = await store.upsertUserNotionCredential({
         userId: auth.auth.userId,
@@ -1497,6 +1849,17 @@ export function createApp(options?: { store?: Store }) {
         tokenHint,
         apiVersion,
         apiBaseUrl
+      });
+      await appendAuditLog(store, {
+        actor: auth.auth,
+        action: "NOTION_CREDENTIAL_UPSERT",
+        targetType: "user_notion_credentials",
+        targetId: auth.auth.userId,
+        metadata: {
+          token_hint: credential.token_hint,
+          api_version: credential.api_version,
+          api_base_url: credential.api_base_url
+        }
       });
       return jsonResponse({
         configured: true,
@@ -1517,6 +1880,14 @@ export function createApp(options?: { store?: Store }) {
 
     return withStore(env, async (store) => {
       const deleted = await store.deleteUserNotionCredential(auth.auth.userId);
+      if (deleted) {
+        await appendAuditLog(store, {
+          actor: auth.auth,
+          action: "NOTION_CREDENTIAL_DELETE",
+          targetType: "user_notion_credentials",
+          targetId: auth.auth.userId
+        });
+      }
       return jsonResponse({
         configured: false,
         deleted
@@ -1559,9 +1930,186 @@ export function createApp(options?: { store?: Store }) {
         targetPageId: pageId,
         targetPageTitle: pageTitle
       });
+      await appendAuditLog(store, {
+        actor: auth.auth,
+        action: "NOTION_TARGET_UPDATE",
+        targetType: "user_settings",
+        targetId: auth.auth.userId,
+        metadata: {
+          page_id: settings.target_page_id,
+          page_title: settings.target_page_title
+        }
+      });
       return jsonResponse({
         page_id: settings.target_page_id,
         page_title: settings.target_page_title
+      });
+    });
+  }
+
+  async function handleAdminListUserTokens(request: Request, env: Env): Promise<Response | null> {
+    if (request.method !== "GET") {
+      return null;
+    }
+    const url = new URL(request.url);
+    const match = url.pathname.match(/^\/v1\/admin\/users\/([^/]+)\/tokens$/);
+    if (!match) {
+      return null;
+    }
+
+    const auth = await requireUserId(request, env);
+    if (!auth.ok) {
+      return auth.response;
+    }
+    if (!auth.auth.isAdmin) {
+      return errorResponse(403, "FORBIDDEN", "Admin scope is required.");
+    }
+
+    let targetUserId: string;
+    try {
+      targetUserId = decodeURIComponent(match[1]);
+    } catch {
+      return errorResponse(400, "BAD_REQUEST", "Invalid user id in path.");
+    }
+
+    const activeRaw = url.searchParams.get("active");
+    const isActive = parseBooleanInput(activeRaw);
+    if (activeRaw !== null && isActive === null) {
+      return errorResponse(400, "BAD_REQUEST", "active must be true/false or 1/0.");
+    }
+
+    return withStore(env, async (store) => {
+      const tokens = await store.listAccessTokens({
+        userId: targetUserId,
+        isActive
+      });
+      return jsonResponse({
+        user_id: targetUserId,
+        tokens: tokens.map(toPublicToken)
+      });
+    });
+  }
+
+  async function handleAdminCreateUserToken(request: Request, env: Env): Promise<Response | null> {
+    if (request.method !== "POST") {
+      return null;
+    }
+    const url = new URL(request.url);
+    const match = url.pathname.match(/^\/v1\/admin\/users\/([^/]+)\/tokens$/);
+    if (!match) {
+      return null;
+    }
+
+    const auth = await requireUserId(request, env);
+    if (!auth.ok) {
+      return auth.response;
+    }
+    if (!auth.auth.isAdmin) {
+      return errorResponse(403, "FORBIDDEN", "Admin scope is required.");
+    }
+
+    let targetUserId: string;
+    try {
+      targetUserId = decodeURIComponent(match[1]);
+    } catch {
+      return errorResponse(400, "BAD_REQUEST", "Invalid user id in path.");
+    }
+
+    let body: unknown = {};
+    try {
+      body = await request.json();
+    } catch {
+      return errorResponse(400, "BAD_REQUEST", "Invalid JSON body.");
+    }
+    if (!isObjectBody(body)) {
+      return errorResponse(400, "BAD_REQUEST", "Invalid request body.");
+    }
+
+    const label = typeof body.label === "string" ? body.label : null;
+    const scopesInput = parseScopesInput(body.scopes);
+    const scopes = scopesInput.length > 0 ? scopesInput : ["items:read", "items:write"];
+    const expiresAt = normalizeExpiresAt(body.expires_at);
+    if (expiresAt === "__INVALID__") {
+      return errorResponse(400, "BAD_REQUEST", "expires_at must be a valid ISO datetime.");
+    }
+
+    return withStore(env, async (store) => {
+      const user = await store.getUser(targetUserId);
+      if (!user) {
+        return errorResponse(404, "NOT_FOUND", "User not found.");
+      }
+      const issued = await store.issueAccessToken({
+        userId: targetUserId,
+        label,
+        scopes,
+        expiresAt
+      });
+      await appendAuditLog(store, {
+        actor: auth.auth,
+        action: "TOKEN_CREATE_ADMIN_USER",
+        targetType: "api_access_token",
+        targetId: issued.token.id,
+        metadata: {
+          user_id: issued.token.user_id,
+          scopes: issued.token.scopes,
+          expires_at: issued.token.expires_at
+        }
+      });
+      return jsonResponse(
+        {
+          user_id: targetUserId,
+          token: issued.plainToken,
+          token_record: toPublicToken(issued.token)
+        },
+        201
+      );
+    });
+  }
+
+  async function handleAdminRevokeUserToken(request: Request, env: Env): Promise<Response | null> {
+    if (request.method !== "POST") {
+      return null;
+    }
+    const url = new URL(request.url);
+    const match = url.pathname.match(/^\/v1\/admin\/users\/([^/]+)\/tokens\/([^/]+)\/revoke$/);
+    if (!match) {
+      return null;
+    }
+
+    const auth = await requireUserId(request, env);
+    if (!auth.ok) {
+      return auth.response;
+    }
+    if (!auth.auth.isAdmin) {
+      return errorResponse(403, "FORBIDDEN", "Admin scope is required.");
+    }
+
+    let targetUserId: string;
+    let tokenId: string;
+    try {
+      targetUserId = decodeURIComponent(match[1]);
+      tokenId = decodeURIComponent(match[2]);
+    } catch {
+      return errorResponse(400, "BAD_REQUEST", "Invalid path parameter.");
+    }
+
+    return withStore(env, async (store) => {
+      const token = await store.getAccessTokenById(tokenId);
+      if (!token || token.user_id !== targetUserId) {
+        return errorResponse(404, "NOT_FOUND", "Token not found.");
+      }
+      await store.revokeAccessToken({ tokenId });
+      await appendAuditLog(store, {
+        actor: auth.auth,
+        action: "TOKEN_REVOKE_ADMIN_USER",
+        targetType: "api_access_token",
+        targetId: tokenId,
+        metadata: { user_id: targetUserId }
+      });
+      return jsonResponse({
+        user_id: targetUserId,
+        token_id: tokenId,
+        status: "REVOKED"
       });
     });
   }
@@ -1608,6 +2156,17 @@ export function createApp(options?: { store?: Store }) {
         label,
         scopes,
         expiresAt
+      });
+      await appendAuditLog(store, {
+        actor: auth.auth,
+        action: "TOKEN_CREATE_ADMIN",
+        targetType: "api_access_token",
+        targetId: issued.token.id,
+        metadata: {
+          user_id: issued.token.user_id,
+          scopes: issued.token.scopes,
+          expires_at: issued.token.expires_at
+        }
       });
       return jsonResponse(
         {
@@ -1678,10 +2237,46 @@ export function createApp(options?: { store?: Store }) {
       if (!revoked) {
         return errorResponse(404, "NOT_FOUND", "Token not found.");
       }
+      await appendAuditLog(store, {
+        actor: auth.auth,
+        action: "TOKEN_REVOKE_ADMIN",
+        targetType: "api_access_token",
+        targetId: tokenId
+      });
       return jsonResponse({
         token_id: tokenId,
         status: "REVOKED"
       });
+    });
+  }
+
+  async function handleAdminListAuditLogs(request: Request, env: Env): Promise<Response | null> {
+    const url = new URL(request.url);
+    if (request.method !== "GET" || url.pathname !== "/v1/admin/audit-logs") {
+      return null;
+    }
+
+    const auth = await requireUserId(request, env);
+    if (!auth.ok) {
+      return auth.response;
+    }
+    if (!canManageUsers(auth.auth.scopes)) {
+      return errorResponse(403, "FORBIDDEN", "Admin scope is required.");
+    }
+
+    const limitRaw = url.searchParams.get("limit");
+    let limit = 100;
+    if (limitRaw !== null) {
+      const parsed = Number.parseInt(limitRaw, 10);
+      if (!Number.isFinite(parsed) || parsed < 1 || parsed > 500) {
+        return errorResponse(400, "BAD_REQUEST", "limit should be in range 1..500.");
+      }
+      limit = parsed;
+    }
+
+    return withStore(env, async (store) => {
+      const logs = await store.listAuditLogs({ limit });
+      return jsonResponse({ logs });
     });
   }
 
@@ -1726,9 +2321,13 @@ export function createApp(options?: { store?: Store }) {
         () => handleAdminListUsers(request, env),
         () => handleAdminUpdateUser(request, env),
         () => handleAdminDeleteUser(request, env),
+        () => handleAdminListUserTokens(request, env),
+        () => handleAdminCreateUserToken(request, env),
+        () => handleAdminRevokeUserToken(request, env),
         () => handleAdminCreateToken(request, env),
         () => handleAdminListTokens(request, env),
-        () => handleAdminRevokeToken(request, env)
+        () => handleAdminRevokeToken(request, env),
+        () => handleAdminListAuditLogs(request, env)
       ];
 
       for (const handler of handlers) {

@@ -1,27 +1,38 @@
 openapi: 3.0.3
 info:
-  title: WX2Notion API
-  version: 0.1.0
+  title: toNotion API
+  version: 0.2.0
   description: |
-    API draft for ingesting WeChat shared links, parsing content, and syncing to Notion.
+    API for ingesting WeChat article links, parsing content, and syncing to Notion.
 servers:
   - url: /
     description: Current deployment
-  - url: https://api.wx2notion.example.com
-    description: Production
-  - url: https://staging-api.wx2notion.example.com
-    description: Staging
 tags:
+  - name: System
   - name: Ingest
   - name: Item
   - name: Auth
   - name: Settings
+  - name: Me
   - name: Admin
 paths:
+  /healthz:
+    get:
+      tags: [System]
+      summary: Service health check
+      operationId: healthCheck
+      responses:
+        '200':
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthzResponse'
+
   /v1/ingest:
     post:
       tags: [Ingest]
-      summary: Ingest a shared item from Android client
+      summary: Ingest WeChat article URL
       operationId: ingestItem
       security:
         - bearerAuth: []
@@ -42,10 +53,11 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
+
   /v1/items:
     get:
       tags: [Item]
-      summary: List items in inbox
+      summary: List user items
       operationId: listItems
       security:
         - bearerAuth: []
@@ -72,25 +84,23 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ItemListResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
+
   /v1/items/{itemId}:
     get:
       tags: [Item]
-      summary: Get a single item
+      summary: Get item detail
       operationId: getItem
       security:
         - bearerAuth: []
       parameters:
-        - in: path
-          name: itemId
-          required: true
-          schema:
-            type: string
-            format: uuid
+        - $ref: '#/components/parameters/ItemId'
       responses:
         '200':
-          description: Item details
+          description: Item detail
           content:
             application/json:
               schema:
@@ -99,20 +109,16 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
+
   /v1/items/{itemId}/retry:
     post:
       tags: [Item]
-      summary: Retry parse/sync for a failed item
+      summary: Retry parsing/syncing item
       operationId: retryItem
       security:
         - bearerAuth: []
       parameters:
-        - in: path
-          name: itemId
-          required: true
-          schema:
-            type: string
-            format: uuid
+        - $ref: '#/components/parameters/ItemId'
       responses:
         '202':
           description: Retry accepted
@@ -124,11 +130,12 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
+
   /v1/auth/notion/start:
     get:
       tags: [Auth]
       summary: Build Notion OAuth authorize URL
-      operationId: startNotionAuth
+      operationId: notionAuthStart
       security:
         - bearerAuth: []
       responses:
@@ -140,10 +147,11 @@ paths:
                 $ref: '#/components/schemas/AuthStartResponse'
         '401':
           $ref: '#/components/responses/Unauthorized'
+
   /v1/auth/notion/callback:
     get:
       tags: [Auth]
-      summary: OAuth callback endpoint
+      summary: Handle Notion OAuth callback
       operationId: notionAuthCallback
       parameters:
         - in: query
@@ -158,18 +166,19 @@ paths:
             type: string
       responses:
         '200':
-          description: Callback processed
+          description: Callback handled
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/AuthCallbackResponse'
         '400':
           $ref: '#/components/responses/BadRequest'
+
   /v1/settings/notion-target:
     put:
       tags: [Settings]
-      summary: Set target Notion parent page id for current user
-      operationId: updateNotionTarget
+      summary: Update current user's Notion target page (legacy endpoint)
+      operationId: updateNotionTargetLegacy
       security:
         - bearerAuth: []
       requestBody:
@@ -189,11 +198,46 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
-  /v1/admin/tokens:
+
+  /v1/me:
+    get:
+      tags: [Me]
+      summary: Get current user profile
+      operationId: getMeProfile
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Current user profile
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MeProfileResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /v1/me/tokens:
+    get:
+      tags: [Me]
+      summary: List current user's access tokens
+      operationId: listMyTokens
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Token list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
     post:
-      tags: [Admin]
-      summary: Create a new API access token
-      operationId: createAdminToken
+      tags: [Me]
+      summary: Create current user's access token
+      operationId: createMyToken
       security:
         - bearerAuth: []
       requestBody:
@@ -201,14 +245,343 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/AdminCreateTokenRequest'
+              $ref: '#/components/schemas/CreateTokenRequest'
       responses:
         '201':
           description: Token created
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/AdminCreateTokenResponse'
+                $ref: '#/components/schemas/CreateTokenResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /v1/me/tokens/{tokenId}/revoke:
+    post:
+      tags: [Me]
+      summary: Revoke one of current user's tokens
+      operationId: revokeMyToken
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/TokenId'
+      responses:
+        '200':
+          description: Token revoked
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RevokeTokenResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /v1/me/notion-credentials:
+    get:
+      tags: [Me]
+      summary: Get current user's Notion credential status
+      operationId: getMyNotionCredential
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Current credential status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MeNotionCredentialGetResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    put:
+      tags: [Me]
+      summary: Upsert current user's Notion credential
+      operationId: upsertMyNotionCredential
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MeNotionCredentialPutRequest'
+      responses:
+        '200':
+          description: Credential upserted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MeNotionCredentialPutResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    delete:
+      tags: [Me]
+      summary: Delete current user's Notion credential
+      operationId: deleteMyNotionCredential
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Credential deletion result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MeNotionCredentialDeleteResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /v1/me/notion-target:
+    put:
+      tags: [Me]
+      summary: Update current user's Notion target page
+      operationId: updateMyNotionTarget
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MeNotionTargetRequest'
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MeNotionTargetResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /v1/admin/users:
+    post:
+      tags: [Admin]
+      summary: Create user
+      operationId: adminCreateUser
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminCreateUserRequest'
+      responses:
+        '201':
+          description: User created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminCreateUserResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          description: User already exists
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    get:
+      tags: [Admin]
+      summary: List users
+      operationId: adminListUsers
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: query
+          name: status
+          schema:
+            type: string
+            enum: [ACTIVE, DISABLED, DELETED]
+      responses:
+        '200':
+          description: User list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminListUsersResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /v1/admin/users/{userId}:
+    patch:
+      tags: [Admin]
+      summary: Update user status or display name
+      operationId: adminUpdateUser
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/UserId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminUpdateUserRequest'
+      responses:
+        '200':
+          description: User updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminCreateUserResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [Admin]
+      summary: Delete user (logical delete)
+      operationId: adminDeleteUser
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/UserId'
+      responses:
+        '200':
+          description: User deleted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminDeleteUserResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /v1/admin/users/{userId}/tokens:
+    get:
+      tags: [Admin]
+      summary: List access tokens for a specific user
+      operationId: adminListUserTokens
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/UserId'
+        - in: query
+          name: active
+          schema:
+            type: boolean
+      responses:
+        '200':
+          description: User token list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminUserTokenListResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    post:
+      tags: [Admin]
+      summary: Create access token for a specific user
+      operationId: adminCreateUserToken
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/UserId'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateTokenRequest'
+      responses:
+        '201':
+          description: User token created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminCreateUserTokenResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /v1/admin/users/{userId}/tokens/{tokenId}/revoke:
+    post:
+      tags: [Admin]
+      summary: Revoke access token for a specific user
+      operationId: adminRevokeUserToken
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/UserId'
+        - $ref: '#/components/parameters/TokenId'
+      responses:
+        '200':
+          description: Token revoked
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminRevokeUserTokenResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /v1/admin/tokens:
+    post:
+      tags: [Admin]
+      summary: Create API access token
+      operationId: adminCreateToken
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: '#/components/schemas/CreateTokenRequest'
+                - type: object
+                  properties:
+                    user_id:
+                      type: string
+      responses:
+        '201':
+          description: Token created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateTokenResponse'
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
@@ -218,7 +591,7 @@ paths:
     get:
       tags: [Admin]
       summary: List API access tokens
-      operationId: listAdminTokens
+      operationId: adminListTokens
       security:
         - bearerAuth: []
       parameters:
@@ -236,45 +609,93 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/AdminTokenListResponse'
+                $ref: '#/components/schemas/TokenListResponse'
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+
   /v1/admin/tokens/{tokenId}/revoke:
     post:
       tags: [Admin]
-      summary: Revoke an API access token
-      operationId: revokeAdminToken
+      summary: Revoke API access token
+      operationId: adminRevokeToken
       security:
         - bearerAuth: []
       parameters:
-        - in: path
-          name: tokenId
-          required: true
-          schema:
-            type: string
+        - $ref: '#/components/parameters/TokenId'
       responses:
         '200':
           description: Token revoked
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/AdminRevokeTokenResponse'
+                $ref: '#/components/schemas/RevokeTokenResponse'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+
+  /v1/admin/audit-logs:
+    get:
+      tags: [Admin]
+      summary: List audit logs
+      operationId: adminListAuditLogs
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 500
+            default: 100
+      responses:
+        '200':
+          description: Audit log list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminAuditLogListResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
 components:
   securitySchemes:
     bearerAuth:
       type: http
       scheme: bearer
-      bearerFormat: JWT
+      bearerFormat: Bearer
+
+  parameters:
+    ItemId:
+      in: path
+      name: itemId
+      required: true
+      schema:
+        type: string
+    UserId:
+      in: path
+      name: userId
+      required: true
+      schema:
+        type: string
+    TokenId:
+      in: path
+      name: tokenId
+      required: true
+      schema:
+        type: string
+
   responses:
     BadRequest:
       description: Invalid request
@@ -288,97 +709,82 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/ErrorResponse'
-    NotFound:
-      description: Resource not found
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/ErrorResponse'
     Forbidden:
       description: Permission denied
       content:
         application/json:
           schema:
             $ref: '#/components/schemas/ErrorResponse'
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    InternalError:
+      description: Internal server error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+
   schemas:
-    IngestRequest:
+    HealthzResponse:
       type: object
-      required:
-        - client_item_id
-        - source_url
       properties:
-        client_item_id:
-          type: string
-          description: Stable client-side id for deduplication.
-        source_url:
-          type: string
-          format: uri
-        raw_text:
-          type: string
-          description: Full shared text payload from Android intent.
-        source_app:
-          type: string
-          default: wechat
-        source_type:
-          type: string
-          enum: [wechat_mp]
-          default: wechat_mp
-    IngestResponse:
-      type: object
-      required:
-        - item_id
-        - status
-      properties:
-        item_id:
-          type: string
-          format: uuid
         status:
-          $ref: '#/components/schemas/ItemStatus'
-        duplicated_from_item_id:
           type: string
-          format: uuid
-          nullable: true
-    ItemListResponse:
+          example: ok
+
+    ErrorResponse:
       type: object
-      required:
-        - items
-        - next_page_token
       properties:
-        items:
-          type: array
-          items:
-            $ref: '#/components/schemas/Item'
-        next_page_token:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+            message:
+              type: string
+            trace_id:
+              type: string
+              nullable: true
+
+    ItemStatus:
+      type: string
+      enum: [RECEIVED, PARSING, PARSE_FAILED, SYNCING, SYNC_FAILED, SYNCED]
+
+    SyncError:
+      type: object
+      properties:
+        code:
           type: string
-          nullable: true
-    ItemResponse:
-      type: object
-      required:
-        - item
-      properties:
-        item:
-          $ref: '#/components/schemas/Item'
+        message:
+          type: string
+        retriable:
+          type: boolean
+        trace_id:
+          type: string
+
     Item:
       type: object
-      required:
-        - id
-        - source_url
-        - status
-        - created_at
-        - updated_at
       properties:
         id:
           type: string
-          format: uuid
+        user_id:
+          type: string
+        client_item_id:
+          type: string
         source_url:
           type: string
-          format: uri
         normalized_url:
           type: string
-          format: uri
         source_type:
           type: string
           enum: [wechat_mp]
+        raw_text:
+          type: string
+          nullable: true
         title:
           type: string
           nullable: true
@@ -387,7 +793,6 @@ components:
           nullable: true
         cover_url:
           type: string
-          format: uri
           nullable: true
         content_plaintext:
           type: string
@@ -399,136 +804,144 @@ components:
           nullable: true
         notion_page_url:
           type: string
-          format: uri
           nullable: true
         error:
-          $ref: '#/components/schemas/SyncError'
+          allOf:
+            - $ref: '#/components/schemas/SyncError'
+          nullable: true
         created_at:
           type: string
-          format: date-time
         updated_at:
           type: string
-          format: date-time
-    RetryResponse:
+
+    IngestRequest:
       type: object
-      required:
-        - item_id
-        - status
+      required: [client_item_id, source_url]
+      properties:
+        client_item_id:
+          type: string
+        source_url:
+          type: string
+          format: uri
+        raw_text:
+          type: string
+          nullable: true
+        source_app:
+          type: string
+          nullable: true
+        source_type:
+          type: string
+          enum: [wechat_mp]
+
+    IngestResponse:
+      type: object
       properties:
         item_id:
           type: string
-          format: uuid
         status:
           $ref: '#/components/schemas/ItemStatus'
+        duplicated_from_item_id:
+          type: string
+          nullable: true
+
+    ItemListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Item'
+        next_page_token:
+          type: string
+          nullable: true
+
+    ItemResponse:
+      type: object
+      properties:
+        item:
+          $ref: '#/components/schemas/Item'
+
+    RetryResponse:
+      type: object
+      properties:
+        item_id:
+          type: string
+        status:
+          type: string
+          enum: [RECEIVED]
+
     AuthStartResponse:
       type: object
-      required:
-        - authorize_url
-        - state
       properties:
         authorize_url:
           type: string
-          format: uri
         state:
           type: string
         expires_at:
           type: string
-          format: date-time
+
     AuthCallbackResponse:
       type: object
-      required:
-        - success
       properties:
         success:
           type: boolean
         deep_link:
           type: string
-          format: uri
-          nullable: true
         workspace_name:
           type: string
           nullable: true
+
     UpdateNotionTargetRequest:
       type: object
-      required:
-        - page_id
+      required: [page_id]
       properties:
         page_id:
           type: string
-          description: Notion parent page ID.
         page_title:
           type: string
           nullable: true
-          description: Optional label for display only.
+
     UpdateNotionTargetResponse:
       type: object
-      required:
-        - page_id
       properties:
         page_id:
           type: string
         page_title:
           type: string
           nullable: true
-    AdminCreateTokenRequest:
+
+    AppUser:
       type: object
       properties:
-        user_id:
+        id:
           type: string
-        label:
+        display_name:
           type: string
           nullable: true
-        scopes:
-          oneOf:
-            - type: array
-              items:
-                type: string
-            - type: string
-          nullable: true
-        expires_at:
+        role:
           type: string
-          format: date-time
-          nullable: true
-    AdminCreateTokenResponse:
-      type: object
-      required:
-        - token
-        - token_record
-      properties:
-        token:
-          type: string
-          description: Plain token shown only once at creation time.
-        token_record:
-          $ref: '#/components/schemas/AdminTokenRecord'
-    AdminTokenListResponse:
-      type: object
-      required:
-        - tokens
-      properties:
-        tokens:
-          type: array
-          items:
-            $ref: '#/components/schemas/AdminTokenRecord'
-    AdminRevokeTokenResponse:
-      type: object
-      required:
-        - token_id
-        - status
-      properties:
-        token_id:
-          type: string
+          enum: [SUPER_ADMIN, USER]
         status:
           type: string
-          enum: [REVOKED]
-    AdminTokenRecord:
+          enum: [ACTIVE, DISABLED, DELETED]
+        created_at:
+          type: string
+        updated_at:
+          type: string
+        deleted_at:
+          type: string
+          nullable: true
+
+    MeProfileResponse:
       type: object
-      required:
-        - id
-        - user_id
-        - scopes
-        - is_active
-        - created_at
-        - updated_at
+      properties:
+        user:
+          $ref: '#/components/schemas/AppUser'
+        is_admin:
+          type: boolean
+
+    AccessTokenPublic:
+      type: object
       properties:
         id:
           type: string
@@ -545,58 +958,240 @@ components:
           type: boolean
         expires_at:
           type: string
-          format: date-time
           nullable: true
         last_used_at:
           type: string
-          format: date-time
           nullable: true
         created_at:
           type: string
-          format: date-time
         updated_at:
           type: string
-          format: date-time
-    SyncError:
+
+    TokenListResponse:
       type: object
-      nullable: true
       properties:
-        code:
+        tokens:
+          type: array
+          items:
+            $ref: '#/components/schemas/AccessTokenPublic'
+
+    CreateTokenRequest:
+      type: object
+      properties:
+        label:
           type: string
           nullable: true
-        message:
+        scopes:
+          oneOf:
+            - type: string
+            - type: array
+              items:
+                type: string
+          nullable: true
+        expires_at:
           type: string
           nullable: true
-        retriable:
+
+    CreateTokenResponse:
+      type: object
+      properties:
+        token:
+          type: string
+          description: Plain token appears only at creation time.
+        token_record:
+          $ref: '#/components/schemas/AccessTokenPublic'
+
+    RevokeTokenResponse:
+      type: object
+      properties:
+        token_id:
+          type: string
+        status:
+          type: string
+          enum: [REVOKED]
+
+    UserNotionCredentialMasked:
+      type: object
+      properties:
+        user_id:
+          type: string
+        token_hint:
+          type: string
+          nullable: true
+        api_version:
+          type: string
+        api_base_url:
+          type: string
+        created_at:
+          type: string
+        updated_at:
+          type: string
+
+    MeNotionCredentialGetResponse:
+      type: object
+      properties:
+        configured:
           type: boolean
+        credential:
+          allOf:
+            - $ref: '#/components/schemas/UserNotionCredentialMasked'
           nullable: true
-        trace_id:
+
+    MeNotionCredentialPutRequest:
+      type: object
+      required: [notion_api_token]
+      properties:
+        notion_api_token:
+          type: string
+        notion_api_version:
           type: string
           nullable: true
-    ErrorResponse:
+        notion_api_base_url:
+          type: string
+          nullable: true
+
+    MeNotionCredentialPutResponse:
       type: object
-      required:
-        - error
       properties:
-        error:
-          type: object
-          required:
-            - code
-            - message
-          properties:
-            code:
-              type: string
-            message:
-              type: string
-            trace_id:
-              type: string
-              nullable: true
-    ItemStatus:
-      type: string
-      enum:
-        - RECEIVED
-        - PARSING
-        - PARSE_FAILED
-        - SYNCING
-        - SYNC_FAILED
-        - SYNCED
+        configured:
+          type: boolean
+        credential:
+          $ref: '#/components/schemas/UserNotionCredentialMasked'
+
+    MeNotionCredentialDeleteResponse:
+      type: object
+      properties:
+        configured:
+          type: boolean
+        deleted:
+          type: boolean
+
+    MeNotionTargetRequest:
+      type: object
+      required: [page_id]
+      properties:
+        page_id:
+          type: string
+        page_title:
+          type: string
+          nullable: true
+
+    MeNotionTargetResponse:
+      type: object
+      properties:
+        page_id:
+          type: string
+        page_title:
+          type: string
+          nullable: true
+
+    AdminCreateUserRequest:
+      type: object
+      required: [user_id]
+      properties:
+        user_id:
+          type: string
+        display_name:
+          type: string
+          nullable: true
+        role:
+          type: string
+          enum: [SUPER_ADMIN, USER]
+          default: USER
+
+    AdminCreateUserResponse:
+      type: object
+      properties:
+        user:
+          $ref: '#/components/schemas/AppUser'
+
+    AdminListUsersResponse:
+      type: object
+      properties:
+        users:
+          type: array
+          items:
+            $ref: '#/components/schemas/AppUser'
+
+    AdminUpdateUserRequest:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [ACTIVE, DISABLED, DELETED]
+        display_name:
+          type: string
+          nullable: true
+
+    AdminDeleteUserResponse:
+      type: object
+      properties:
+        user_id:
+          type: string
+        status:
+          type: string
+          enum: [DELETED]
+
+    AdminUserTokenListResponse:
+      type: object
+      properties:
+        user_id:
+          type: string
+        tokens:
+          type: array
+          items:
+            $ref: '#/components/schemas/AccessTokenPublic'
+
+    AdminCreateUserTokenResponse:
+      type: object
+      properties:
+        user_id:
+          type: string
+        token:
+          type: string
+        token_record:
+          $ref: '#/components/schemas/AccessTokenPublic'
+
+    AdminRevokeUserTokenResponse:
+      type: object
+      properties:
+        user_id:
+          type: string
+        token_id:
+          type: string
+        status:
+          type: string
+          enum: [REVOKED]
+
+    AdminAuditLog:
+      type: object
+      properties:
+        id:
+          type: string
+        actor_user_id:
+          type: string
+          nullable: true
+        actor_role:
+          type: string
+          nullable: true
+        action:
+          type: string
+        target_type:
+          type: string
+          nullable: true
+        target_id:
+          type: string
+          nullable: true
+        metadata_json:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+
+    AdminAuditLogListResponse:
+      type: object
+      properties:
+        logs:
+          type: array
+          items:
+            $ref: '#/components/schemas/AdminAuditLog'

@@ -9,6 +9,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
+    "openapi:sync": "node scripts/sync-openapi.mjs",
+    "openapi:check": "node scripts/sync-openapi.mjs --check",
     "test:web-tool": "node test/web-tool/server.mjs",
     "d1:migrate:local": "wrangler d1 migrations apply wx2notion-db --local",
     "d1:migrate:remote": "wrangler d1 migrations apply wx2notion-db --remote",
