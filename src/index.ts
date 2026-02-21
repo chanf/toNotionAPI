@@ -11,6 +11,9 @@ export interface Env {
   WX2NOTION_DEV_TOKEN?: string;
   NOTION_API_VERSION?: string;
   NOTION_API_BASE_URL?: string;
+  NOTION_OAUTH_CLIENT_ID?: string;
+  NOTION_OAUTH_CLIENT_SECRET?: string;
+  NOTION_OAUTH_REDIRECT_URI?: string;
   CREDENTIALS_ENCRYPTION_KEY?: string;
   NOTION_MOCK?: string;
   LOG_LEVEL?: string;
@@ -103,6 +106,38 @@ function bytesToBase64(bytes: Uint8Array): string {
   return btoa(binary);
 }
 
+function base64ToBytes(input: string): Uint8Array {
+  const maybeBuffer = (globalThis as unknown as {
+    Buffer?: { from(data: string, encoding: string): Uint8Array };
+  }).Buffer;
+  if (maybeBuffer) {
+    return new Uint8Array(maybeBuffer.from(input, "base64"));
+  }
+  const binary = atob(input);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return bytes;
+}
+
+function concatBytes(left: Uint8Array, right: Uint8Array): Uint8Array {
+  const merged = new Uint8Array(left.length + right.length);
+  merged.set(left, 0);
+  merged.set(right, left.length);
+  return merged;
+}
+
+function base64FromText(input: string): string {
+  const maybeBuffer = (globalThis as unknown as {
+    Buffer?: { from(data: string, encoding: string): { toString(encoding: string): string } };
+  }).Buffer;
+  if (maybeBuffer) {
+    return maybeBuffer.from(input, "utf8").toString("base64");
+  }
+  return btoa(input);
+}
+
 async function encryptSecret(plain: string, rawKey: string): Promise<{
   tokenCiphertext: string;
   tokenIv: string;
@@ -141,12 +176,168 @@ async function encryptSecret(plain: string, rawKey: string): Promise<{
   };
 }
 
+async function decryptSecret(input: {
+  tokenCiphertext: string;
+  tokenIv: string;
+  tokenTag: string;
+}, rawKey: string): Promise<string> {
+  if (!globalThis.crypto?.subtle) {
+    throw new Error("WebCrypto API is unavailable.");
+  }
+  const encodedKey = new TextEncoder().encode(rawKey);
+  const keyDigest = await globalThis.crypto.subtle.digest("SHA-256", encodedKey);
+  const cryptoKey = await globalThis.crypto.subtle.importKey(
+    "raw",
+    keyDigest,
+    { name: "AES-GCM" },
+    false,
+    ["decrypt"]
+  );
+  const iv = base64ToBytes(input.tokenIv);
+  const cipherBytes = base64ToBytes(input.tokenCiphertext);
+  const tagBytes = base64ToBytes(input.tokenTag);
+  const encrypted = concatBytes(cipherBytes, tagBytes);
+  const plainBuffer = await globalThis.crypto.subtle.decrypt(
+    {
+      name: "AES-GCM",
+      iv: iv as unknown as BufferSource
+    },
+    cryptoKey,
+    encrypted as unknown as BufferSource
+  );
+  return new TextDecoder().decode(new Uint8Array(plainBuffer));
+}
+
 function parseEnvBoolean(raw: string | undefined): boolean {
   if (!raw) {
     return false;
   }
   const normalized = raw.trim().toLowerCase();
   return normalized === "1" || normalized === "true" || normalized === "yes";
+}
+
+type NotionOAuthConfig = {
+  clientId: string;
+  clientSecret: string;
+  redirectUri: string;
+  authorizeUrl: string;
+  tokenUrl: string;
+  apiVersion: string;
+};
+
+type NotionOAuthTokenPayload = {
+  accessToken: string;
+  refreshToken: string | null;
+  workspaceName: string | null;
+  workspaceId: string | null;
+  workspaceIcon: string | null;
+  botId: string | null;
+  accessTokenExpiresAt: string | null;
+};
+
+function extractTokenHint(token: string): string {
+  return token.length <= 6 ? token : token.slice(-6);
+}
+
+function resolveNotionOAuthConfig(env: Env): NotionOAuthConfig | null {
+  const clientId = env.NOTION_OAUTH_CLIENT_ID?.trim() ?? "";
+  const clientSecret = env.NOTION_OAUTH_CLIENT_SECRET?.trim() ?? "";
+  const redirectUri = env.NOTION_OAUTH_REDIRECT_URI?.trim() ?? "";
+  if (!clientId || !clientSecret || !redirectUri) {
+    return null;
+  }
+  const apiBaseUrl = normalizeApiBaseUrl(env.NOTION_API_BASE_URL);
+  return {
+    clientId,
+    clientSecret,
+    redirectUri,
+    authorizeUrl: `${apiBaseUrl}/oauth/authorize`,
+    tokenUrl: `${apiBaseUrl}/oauth/token`,
+    apiVersion: env.NOTION_API_VERSION?.trim() || "2022-06-28"
+  };
+}
+
+function parseNotionOAuthTokenPayload(raw: unknown): NotionOAuthTokenPayload | null {
+  if (!raw || typeof raw !== "object") {
+    return null;
+  }
+  const payload = raw as Record<string, unknown>;
+  const accessToken = typeof payload.access_token === "string" ? payload.access_token.trim() : "";
+  if (!accessToken) {
+    return null;
+  }
+  const refreshToken =
+    typeof payload.refresh_token === "string" && payload.refresh_token.trim().length > 0
+      ? payload.refresh_token.trim()
+      : null;
+  const workspaceName = typeof payload.workspace_name === "string" ? payload.workspace_name : null;
+  const workspaceId = typeof payload.workspace_id === "string" ? payload.workspace_id : null;
+  const workspaceIcon = typeof payload.workspace_icon === "string" ? payload.workspace_icon : null;
+  const botId = typeof payload.bot_id === "string" ? payload.bot_id : null;
+  let accessTokenExpiresAt: string | null = null;
+  if (typeof payload.expires_in === "number" && Number.isFinite(payload.expires_in) && payload.expires_in > 0) {
+    accessTokenExpiresAt = new Date(Date.now() + payload.expires_in * 1000).toISOString();
+  }
+  return {
+    accessToken,
+    refreshToken,
+    workspaceName,
+    workspaceId,
+    workspaceIcon,
+    botId,
+    accessTokenExpiresAt
+  };
+}
+
+async function requestNotionOAuthToken(
+  config: NotionOAuthConfig,
+  body: Record<string, string>
+): Promise<
+  | { ok: true; payload: NotionOAuthTokenPayload }
+  | { ok: false; status: number; message: string }
+> {
+  const response = await fetch(config.tokenUrl, {
+    method: "POST",
+    headers: {
+      authorization: `Basic ${base64FromText(`${config.clientId}:${config.clientSecret}`)}`,
+      "content-type": "application/json",
+      "notion-version": config.apiVersion
+    },
+    body: JSON.stringify(body)
+  });
+  let responseBody: unknown = null;
+  try {
+    responseBody = await response.json();
+  } catch {
+    responseBody = null;
+  }
+  if (!response.ok) {
+    if (responseBody && typeof responseBody === "object") {
+      const errorBody = responseBody as Record<string, unknown>;
+      const errorCode = typeof errorBody.error === "string" ? errorBody.error : "oauth_error";
+      const errorDescription =
+        typeof errorBody.error_description === "string" ? errorBody.error_description : "OAuth request failed.";
+      return {
+        ok: false,
+        status: response.status,
+        message: `${errorCode}: ${errorDescription}`
+      };
+    }
+    return {
+      ok: false,
+      status: response.status,
+      message: `OAuth request failed with status ${response.status}.`
+    };
+  }
+  const parsed = parseNotionOAuthTokenPayload(responseBody);
+  if (!parsed) {
+    return {
+      ok: false,
+      status: 502,
+      message: "OAuth response missing access token."
+    };
+  }
+  return { ok: true, payload: parsed };
 }
 
 function resolveNotionRuntime(env: Env): NotionRuntimeInput {
@@ -1458,14 +1649,24 @@ export function createApp(options?: { store?: Store }) {
     if (!auth.ok) {
       return auth.response;
     }
+    const oauthConfig = resolveNotionOAuthConfig(env);
+    if (!oauthConfig) {
+      return errorResponse(
+        500,
+        "CONFIG_MISSING",
+        "NOTION_OAUTH_CLIENT_ID, NOTION_OAUTH_CLIENT_SECRET and NOTION_OAUTH_REDIRECT_URI are required."
+      );
+    }
 
     return withStore(env, async (store) => {
       const state = randomId().replaceAll("-", "");
       const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
       await store.createOAuthState({ state, userId: auth.auth.userId, expiresAt });
       const authorizeUrl =
-        "https://api.notion.com/v1/oauth/authorize" +
-        `?owner=user&client_id=demo-client-id&response_type=code&state=${state}`;
+        `${oauthConfig.authorizeUrl}` +
+        `?owner=user&client_id=${encodeURIComponent(oauthConfig.clientId)}` +
+        `&response_type=code&redirect_uri=${encodeURIComponent(oauthConfig.redirectUri)}` +
+        `&state=${encodeURIComponent(state)}`;
       return jsonResponse({
         authorize_url: authorizeUrl,
         state,
@@ -1485,20 +1686,190 @@ export function createApp(options?: { store?: Store }) {
     if (!code || !state) {
       return errorResponse(400, "BAD_REQUEST", "code and state are required.");
     }
+    const oauthConfig = resolveNotionOAuthConfig(env);
+    if (!oauthConfig) {
+      return errorResponse(
+        500,
+        "CONFIG_MISSING",
+        "NOTION_OAUTH_CLIENT_ID, NOTION_OAUTH_CLIENT_SECRET and NOTION_OAUTH_REDIRECT_URI are required."
+      );
+    }
+    const rawKey = env.CREDENTIALS_ENCRYPTION_KEY?.trim() ?? "";
+    if (!rawKey) {
+      return errorResponse(500, "CONFIG_MISSING", "CREDENTIALS_ENCRYPTION_KEY is required.");
+    }
 
     return withStore(env, async (store) => {
       const oauthState = await store.consumeOAuthState({ state, now: nowIso() });
       if (!oauthState) {
         return errorResponse(400, "BAD_REQUEST", "Invalid or expired OAuth state.");
       }
+      const oauthResult = await requestNotionOAuthToken(oauthConfig, {
+        grant_type: "authorization_code",
+        code,
+        redirect_uri: oauthConfig.redirectUri
+      });
+      if (!oauthResult.ok) {
+        const status = oauthResult.status >= 500 ? 502 : 400;
+        return errorResponse(status, "NOTION_OAUTH_FAILED", oauthResult.message);
+      }
+      const encryptedAccessToken = await encryptSecret(oauthResult.payload.accessToken, rawKey);
+      const encryptedRefreshToken = oauthResult.payload.refreshToken
+        ? await encryptSecret(oauthResult.payload.refreshToken, rawKey)
+        : null;
+      await store.upsertUserNotionCredential({
+        userId: oauthState.user_id,
+        tokenCiphertext: encryptedAccessToken.tokenCiphertext,
+        tokenIv: encryptedAccessToken.tokenIv,
+        tokenTag: encryptedAccessToken.tokenTag,
+        refreshTokenCiphertext: encryptedRefreshToken?.tokenCiphertext ?? null,
+        refreshTokenIv: encryptedRefreshToken?.tokenIv ?? null,
+        refreshTokenTag: encryptedRefreshToken?.tokenTag ?? null,
+        tokenHint: extractTokenHint(oauthResult.payload.accessToken),
+        accessTokenExpiresAt: oauthResult.payload.accessTokenExpiresAt,
+        apiVersion: oauthConfig.apiVersion,
+        apiBaseUrl: normalizeApiBaseUrl(env.NOTION_API_BASE_URL)
+      });
       const settings = await store.markNotionConnected({
         userId: oauthState.user_id,
-        workspaceName: "Demo Workspace"
+        workspaceName: oauthResult.payload.workspaceName ?? "Notion Workspace"
+      });
+      await appendAuditLog(store, {
+        actor: {
+          userId: oauthState.user_id,
+          isAdmin: false,
+          tokenId: null,
+          scopes: ["self:notion"]
+        },
+        action: "NOTION_OAUTH_CALLBACK",
+        targetType: "user_notion_credentials",
+        targetId: oauthState.user_id,
+        metadata: {
+          workspace_name: oauthResult.payload.workspaceName,
+          workspace_id: oauthResult.payload.workspaceId,
+          workspace_icon: oauthResult.payload.workspaceIcon,
+          bot_id: oauthResult.payload.botId,
+          has_refresh_token: Boolean(oauthResult.payload.refreshToken)
+        }
       });
       return jsonResponse({
         success: true,
         deep_link: "wx2notion://auth/success",
-        workspace_name: settings.workspace_name
+        workspace_name: settings.workspace_name,
+        workspace_id: oauthResult.payload.workspaceId,
+        workspace_icon: oauthResult.payload.workspaceIcon,
+        bot_id: oauthResult.payload.botId,
+        has_refresh_token: Boolean(oauthResult.payload.refreshToken),
+        access_token_expires_at: oauthResult.payload.accessTokenExpiresAt
+      });
+    });
+  }
+
+  async function handleAuthRefresh(request: Request, env: Env): Promise<Response | null> {
+    const url = new URL(request.url);
+    if (request.method !== "POST" || url.pathname !== "/v1/auth/notion/refresh") {
+      return null;
+    }
+    const auth = await requireUserId(request, env);
+    if (!auth.ok) {
+      return auth.response;
+    }
+    const oauthConfig = resolveNotionOAuthConfig(env);
+    if (!oauthConfig) {
+      return errorResponse(
+        500,
+        "CONFIG_MISSING",
+        "NOTION_OAUTH_CLIENT_ID, NOTION_OAUTH_CLIENT_SECRET and NOTION_OAUTH_REDIRECT_URI are required."
+      );
+    }
+    const rawKey = env.CREDENTIALS_ENCRYPTION_KEY?.trim() ?? "";
+    if (!rawKey) {
+      return errorResponse(500, "CONFIG_MISSING", "CREDENTIALS_ENCRYPTION_KEY is required.");
+    }
+
+    return withStore(env, async (store) => {
+      const credential = await store.getUserNotionCredentialSecret(auth.auth.userId);
+      if (!credential) {
+        return errorResponse(404, "NOT_FOUND", "Notion credential is not configured.");
+      }
+      if (
+        !credential.refresh_token_ciphertext ||
+        !credential.refresh_token_iv ||
+        !credential.refresh_token_tag
+      ) {
+        return errorResponse(400, "BAD_REQUEST", "Refresh token is not configured for current user.");
+      }
+
+      let refreshToken = "";
+      try {
+        refreshToken = (await decryptSecret(
+          {
+            tokenCiphertext: credential.refresh_token_ciphertext,
+            tokenIv: credential.refresh_token_iv,
+            tokenTag: credential.refresh_token_tag
+          },
+          rawKey
+        )).trim();
+      } catch {
+        return errorResponse(500, "DECRYPT_FAILED", "Failed to decrypt refresh token.");
+      }
+      if (!refreshToken) {
+        return errorResponse(400, "BAD_REQUEST", "Refresh token is empty.");
+      }
+
+      const oauthResult = await requestNotionOAuthToken(oauthConfig, {
+        grant_type: "refresh_token",
+        refresh_token: refreshToken
+      });
+      if (!oauthResult.ok) {
+        const status = oauthResult.status >= 500 ? 502 : 400;
+        return errorResponse(status, "NOTION_OAUTH_FAILED", oauthResult.message);
+      }
+
+      const encryptedAccessToken = await encryptSecret(oauthResult.payload.accessToken, rawKey);
+      const encryptedRefreshToken = oauthResult.payload.refreshToken
+        ? await encryptSecret(oauthResult.payload.refreshToken, rawKey)
+        : null;
+      await store.upsertUserNotionCredential({
+        userId: auth.auth.userId,
+        tokenCiphertext: encryptedAccessToken.tokenCiphertext,
+        tokenIv: encryptedAccessToken.tokenIv,
+        tokenTag: encryptedAccessToken.tokenTag,
+        refreshTokenCiphertext:
+          encryptedRefreshToken?.tokenCiphertext ?? credential.refresh_token_ciphertext,
+        refreshTokenIv: encryptedRefreshToken?.tokenIv ?? credential.refresh_token_iv,
+        refreshTokenTag: encryptedRefreshToken?.tokenTag ?? credential.refresh_token_tag,
+        tokenHint: extractTokenHint(oauthResult.payload.accessToken),
+        accessTokenExpiresAt: oauthResult.payload.accessTokenExpiresAt,
+        apiVersion: oauthConfig.apiVersion,
+        apiBaseUrl: normalizeApiBaseUrl(env.NOTION_API_BASE_URL)
+      });
+      await store.markNotionConnected({
+        userId: auth.auth.userId,
+        workspaceName: oauthResult.payload.workspaceName ?? "Notion Workspace"
+      });
+      await appendAuditLog(store, {
+        actor: auth.auth,
+        action: "NOTION_OAUTH_REFRESH",
+        targetType: "user_notion_credentials",
+        targetId: auth.auth.userId,
+        metadata: {
+          workspace_name: oauthResult.payload.workspaceName,
+          workspace_id: oauthResult.payload.workspaceId,
+          workspace_icon: oauthResult.payload.workspaceIcon,
+          bot_id: oauthResult.payload.botId,
+          has_refresh_token: true
+        }
+      });
+
+      return jsonResponse({
+        refreshed: true,
+        workspace_name: oauthResult.payload.workspaceName,
+        workspace_id: oauthResult.payload.workspaceId,
+        workspace_icon: oauthResult.payload.workspaceIcon,
+        bot_id: oauthResult.payload.botId,
+        has_refresh_token: true,
+        access_token_expires_at: oauthResult.payload.accessTokenExpiresAt
       });
     });
   }
@@ -2429,6 +2800,7 @@ export function createApp(options?: { store?: Store }) {
         () => handleRetry(request, env, ctx, logger),
         () => handleAuthStart(request, env),
         () => handleAuthCallback(request, env),
+        () => handleAuthRefresh(request, env),
         () => handleUpdateTarget(request, env),
         () => handleMeProfile(request, env),
         () => handleMeListTokens(request, env),

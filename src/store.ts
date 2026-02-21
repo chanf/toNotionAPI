@@ -82,7 +82,11 @@ type UserNotionCredentialRow = {
   token_ciphertext: string;
   token_iv: string;
   token_tag: string;
+  refresh_token_ciphertext: string | null;
+  refresh_token_iv: string | null;
+  refresh_token_tag: string | null;
   token_hint: string | null;
+  access_token_expires_at: string | null;
   api_version: string;
   api_base_url: string;
   created_at: string;
@@ -198,6 +202,10 @@ function rowToUserNotionCredential(row: UserNotionCredentialRow): UserNotionCred
   return {
     user_id: row.user_id,
     token_hint: row.token_hint,
+    has_refresh_token: Boolean(
+      row.refresh_token_ciphertext && row.refresh_token_iv && row.refresh_token_tag
+    ),
+    access_token_expires_at: row.access_token_expires_at,
     api_version: row.api_version,
     api_base_url: row.api_base_url,
     created_at: row.created_at,
@@ -210,7 +218,10 @@ function rowToUserNotionCredentialSecret(row: UserNotionCredentialRow): UserNoti
     ...rowToUserNotionCredential(row),
     token_ciphertext: row.token_ciphertext,
     token_iv: row.token_iv,
-    token_tag: row.token_tag
+    token_tag: row.token_tag,
+    refresh_token_ciphertext: row.refresh_token_ciphertext,
+    refresh_token_iv: row.refresh_token_iv,
+    refresh_token_tag: row.refresh_token_tag
   };
 }
 
@@ -310,7 +321,11 @@ export interface Store {
     tokenCiphertext: string;
     tokenIv: string;
     tokenTag: string;
+    refreshTokenCiphertext?: string | null;
+    refreshTokenIv?: string | null;
+    refreshTokenTag?: string | null;
     tokenHint: string | null;
+    accessTokenExpiresAt?: string | null;
     apiVersion: string;
     apiBaseUrl: string;
   }): Promise<UserNotionCredential>;
@@ -634,7 +649,11 @@ export class InMemoryStore implements Store {
     tokenCiphertext: string;
     tokenIv: string;
     tokenTag: string;
+    refreshTokenCiphertext?: string | null;
+    refreshTokenIv?: string | null;
+    refreshTokenTag?: string | null;
     tokenHint: string | null;
+    accessTokenExpiresAt?: string | null;
     apiVersion: string;
     apiBaseUrl: string;
   }): Promise<UserNotionCredential> {
@@ -646,7 +665,11 @@ export class InMemoryStore implements Store {
       token_ciphertext: input.tokenCiphertext,
       token_iv: input.tokenIv,
       token_tag: input.tokenTag,
+      refresh_token_ciphertext: input.refreshTokenCiphertext ?? null,
+      refresh_token_iv: input.refreshTokenIv ?? null,
+      refresh_token_tag: input.refreshTokenTag ?? null,
       token_hint: input.tokenHint,
+      access_token_expires_at: input.accessTokenExpiresAt ?? null,
       api_version: input.apiVersion,
       api_base_url: input.apiBaseUrl,
       created_at: existing?.created_at ?? now,
@@ -1191,7 +1214,11 @@ export class D1Store implements Store {
     tokenCiphertext: string;
     tokenIv: string;
     tokenTag: string;
+    refreshTokenCiphertext?: string | null;
+    refreshTokenIv?: string | null;
+    refreshTokenTag?: string | null;
     tokenHint: string | null;
+    accessTokenExpiresAt?: string | null;
     apiVersion: string;
     apiBaseUrl: string;
   }): Promise<UserNotionCredential> {
@@ -1200,13 +1227,19 @@ export class D1Store implements Store {
     await checkedRun(
       this.db,
       `INSERT INTO user_notion_credentials (
-        user_id, token_ciphertext, token_iv, token_tag, token_hint, api_version, api_base_url, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        user_id, token_ciphertext, token_iv, token_tag,
+        refresh_token_ciphertext, refresh_token_iv, refresh_token_tag,
+        token_hint, access_token_expires_at, api_version, api_base_url, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(user_id) DO UPDATE SET
         token_ciphertext = excluded.token_ciphertext,
         token_iv = excluded.token_iv,
         token_tag = excluded.token_tag,
+        refresh_token_ciphertext = excluded.refresh_token_ciphertext,
+        refresh_token_iv = excluded.refresh_token_iv,
+        refresh_token_tag = excluded.refresh_token_tag,
         token_hint = excluded.token_hint,
+        access_token_expires_at = excluded.access_token_expires_at,
         api_version = excluded.api_version,
         api_base_url = excluded.api_base_url,
         updated_at = excluded.updated_at`,
@@ -1215,7 +1248,11 @@ export class D1Store implements Store {
         input.tokenCiphertext,
         input.tokenIv,
         input.tokenTag,
+        input.refreshTokenCiphertext ?? null,
+        input.refreshTokenIv ?? null,
+        input.refreshTokenTag ?? null,
         input.tokenHint,
+        input.accessTokenExpiresAt ?? null,
         input.apiVersion,
         input.apiBaseUrl,
         now,
@@ -1232,7 +1269,9 @@ export class D1Store implements Store {
   async getUserNotionCredential(userId: string): Promise<UserNotionCredential | null> {
     const row = await checkedFirst<UserNotionCredentialRow>(
       this.db,
-      `SELECT user_id, token_ciphertext, token_iv, token_tag, token_hint, api_version, api_base_url, created_at, updated_at
+      `SELECT user_id, token_ciphertext, token_iv, token_tag,
+              refresh_token_ciphertext, refresh_token_iv, refresh_token_tag,
+              token_hint, access_token_expires_at, api_version, api_base_url, created_at, updated_at
        FROM user_notion_credentials
        WHERE user_id = ?
        LIMIT 1`,
@@ -1244,7 +1283,9 @@ export class D1Store implements Store {
   async getUserNotionCredentialSecret(userId: string): Promise<UserNotionCredentialSecret | null> {
     const row = await checkedFirst<UserNotionCredentialRow>(
       this.db,
-      `SELECT user_id, token_ciphertext, token_iv, token_tag, token_hint, api_version, api_base_url, created_at, updated_at
+      `SELECT user_id, token_ciphertext, token_iv, token_tag,
+              refresh_token_ciphertext, refresh_token_iv, refresh_token_tag,
+              token_hint, access_token_expires_at, api_version, api_base_url, created_at, updated_at
        FROM user_notion_credentials
        WHERE user_id = ?
        LIMIT 1`,

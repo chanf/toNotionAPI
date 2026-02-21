@@ -3,7 +3,17 @@ import { describe, expect, it, vi } from "vitest";
 import { createApp, type Env, type ExecutionContextLike } from "../src/index";
 import { InMemoryStore } from "../src/store";
 
-const DEV_ENV: Env = { WX2NOTION_DEV_TOKEN: "dev-token", NOTION_MOCK: "true", LOG_LEVEL: "error" };
+const DEV_ENV: Env = {
+  WX2NOTION_DEV_TOKEN: "dev-token",
+  NOTION_MOCK: "true",
+  NOTION_API_VERSION: "2022-06-28",
+  NOTION_API_BASE_URL: "https://api.notion.com/v1",
+  NOTION_OAUTH_CLIENT_ID: "oauth_client_id_test",
+  NOTION_OAUTH_CLIENT_SECRET: "oauth_client_secret_test",
+  NOTION_OAUTH_REDIRECT_URI: "https://example.com/v1/auth/notion/callback",
+  CREDENTIALS_ENCRYPTION_KEY: "test-encryption-key",
+  LOG_LEVEL: "error"
+};
 const AUTH_HEADER = { Authorization: "Bearer dev-token" };
 
 class TestContext implements ExecutionContextLike {
@@ -68,10 +78,36 @@ async function connectNotion(
   expect(start.status).toBe(200);
   const state = (await start.json() as { state: string }).state;
 
-  const callback = await send(app, ctx, `/v1/auth/notion/callback?code=demo&state=${state}`, {
-    method: "GET"
-  }, env);
-  expect(callback.status).toBe(200);
+  const oauthFetch = vi.fn(async (input: RequestInfo | URL) => {
+    const url = new URL(typeof input === "string" ? input : input.toString());
+    if (url.pathname === "/v1/oauth/token") {
+      return new Response(
+        JSON.stringify({
+          access_token: "ntn_access_token_from_oauth",
+          refresh_token: "nrt_refresh_token_from_oauth",
+          workspace_name: "OAuth Workspace",
+          workspace_id: "workspace-oauth-id",
+          workspace_icon: "https://example.com/icon.png",
+          bot_id: "bot-oauth-id"
+        }),
+        {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        }
+      );
+    }
+    return new Response("not found", { status: 404 });
+  });
+
+  vi.stubGlobal("fetch", oauthFetch as typeof fetch);
+  try {
+    const callback = await send(app, ctx, `/v1/auth/notion/callback?code=oauth-code&state=${state}`, {
+      method: "GET"
+    }, env);
+    expect(callback.status).toBe(200);
+  } finally {
+    vi.unstubAllGlobals();
+  }
 }
 
 async function setTargetPage(
@@ -536,12 +572,8 @@ describe("workers backend api", () => {
     const app = createApp({ store });
     const ctx = new TestContext();
     const env: Env = {
-      WX2NOTION_DEV_TOKEN: "dev-token",
-      NOTION_MOCK: "false",
-      NOTION_API_VERSION: "2022-06-28",
-      NOTION_API_BASE_URL: "https://api.notion.com/v1",
-      CREDENTIALS_ENCRYPTION_KEY: "test-encryption-key",
-      LOG_LEVEL: "error"
+      ...DEV_ENV,
+      NOTION_MOCK: "false"
     };
 
     await connectNotion(app, ctx, env);
@@ -705,6 +737,97 @@ describe("workers backend api", () => {
       method: "GET"
     });
     expect(invalidState.status).toBe(400);
+  });
+
+  it("refreshes notion oauth token for current user", async () => {
+    const store = new InMemoryStore();
+    const app = createApp({ store });
+    const ctx = new TestContext();
+
+    await connectNotion(app, ctx, DEV_ENV);
+
+    const refreshFetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(typeof input === "string" ? input : input.toString());
+      if (url.pathname === "/v1/oauth/token") {
+        return new Response(
+          JSON.stringify({
+            access_token: "ntn_access_token_after_refresh",
+            refresh_token: "nrt_refresh_token_after_refresh",
+            workspace_name: "OAuth Workspace Refreshed",
+            workspace_id: "workspace-refreshed",
+            workspace_icon: "https://example.com/icon-refreshed.png",
+            bot_id: "bot-refreshed"
+          }),
+          {
+            status: 200,
+            headers: { "content-type": "application/json" }
+          }
+        );
+      }
+      return new Response("not found", { status: 404 });
+    });
+    vi.stubGlobal("fetch", refreshFetch as typeof fetch);
+    try {
+      const refresh = await send(app, ctx, "/v1/auth/notion/refresh", {
+        method: "POST",
+        headers: AUTH_HEADER
+      }, DEV_ENV);
+      expect(refresh.status).toBe(200);
+      const refreshPayload = await refresh.json() as {
+        refreshed: boolean;
+        has_refresh_token: boolean;
+        workspace_name: string | null;
+      };
+      expect(refreshPayload.refreshed).toBe(true);
+      expect(refreshPayload.has_refresh_token).toBe(true);
+      expect(refreshPayload.workspace_name).toBe("OAuth Workspace Refreshed");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+
+    const getCredential = await send(app, ctx, "/v1/me/notion-credentials", {
+      method: "GET",
+      headers: AUTH_HEADER
+    }, DEV_ENV);
+    expect(getCredential.status).toBe(200);
+    const credentialPayload = await getCredential.json() as {
+      configured: boolean;
+      credential: { has_refresh_token: boolean } | null;
+    };
+    expect(credentialPayload.configured).toBe(true);
+    expect(credentialPayload.credential?.has_refresh_token).toBe(true);
+
+    const auditLogs = await store.listAuditLogs({ limit: 50 });
+    expect(auditLogs.some((entry) => entry.action === "NOTION_OAUTH_CALLBACK")).toBe(true);
+    expect(auditLogs.some((entry) => entry.action === "NOTION_OAUTH_REFRESH")).toBe(true);
+  });
+
+  it("returns 400 when oauth refresh token is not configured", async () => {
+    const app = createApp({ store: new InMemoryStore() });
+    const ctx = new TestContext();
+
+    const putCredential = await sendJson(
+      app,
+      ctx,
+      "/v1/me/notion-credentials",
+      "PUT",
+      {
+        notion_api_token: "ntn_no_refresh_token",
+        notion_api_version: "2022-06-28",
+        notion_api_base_url: "https://api.notion.com/v1"
+      },
+      true,
+      DEV_ENV
+    );
+    expect(putCredential.status).toBe(200);
+
+    const refresh = await send(app, ctx, "/v1/auth/notion/refresh", {
+      method: "POST",
+      headers: AUTH_HEADER
+    }, DEV_ENV);
+    expect(refresh.status).toBe(400);
+    const payload = await refresh.json() as { error: { code: string } };
+    expect(payload.error.code).toBe("BAD_REQUEST");
   });
 
   it("validates admin user create/update/delete edge cases", async () => {
@@ -1026,9 +1149,8 @@ describe("workers backend api", () => {
     const app = createApp({ store: new InMemoryStore() });
     const ctx = new TestContext();
     const realModeEnv: Env = {
-      WX2NOTION_DEV_TOKEN: "dev-token",
-      NOTION_MOCK: "false",
-      LOG_LEVEL: "error"
+      ...DEV_ENV,
+      NOTION_MOCK: "false"
     };
 
     await connectNotion(app, ctx, realModeEnv);
@@ -1056,9 +1178,8 @@ describe("workers backend api", () => {
     const app = createApp({ store: new InMemoryStore() });
     const ctx = new TestContext();
     const realModeEnv: Env = {
-      WX2NOTION_DEV_TOKEN: "dev-token",
-      NOTION_MOCK: "false",
-      LOG_LEVEL: "error"
+      ...DEV_ENV,
+      NOTION_MOCK: "false"
     };
 
     const retryWithoutToken = await send(

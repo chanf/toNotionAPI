@@ -76,7 +76,7 @@ https://tonotion.iiioiii.xin/console
 6. 在 `/console` 中完成：
 - 创建或登录普通用户
 - 创建用户 API Token（供客户端/测试工具调用）
-- 完成 Notion 授权标记（`/v1/auth/notion/start` + `/v1/auth/notion/callback`）
+- 完成 Notion OAuth 授权（`/v1/auth/notion/start` + 浏览器回调）
 - 设置目标页面
 - 在“同步测试工具”中提交公众号 URL + `notion_api_token` 验证链路
 
@@ -92,6 +92,7 @@ https://tonotion.iiioiii.xin/console
 - `POST /v1/items/{itemId}/retry`
 - `GET /v1/auth/notion/start`
 - `GET /v1/auth/notion/callback`
+- `POST /v1/auth/notion/refresh`
 - `PUT /v1/settings/notion-target`
 - `GET /v1/me`
 - `GET /v1/me/tokens`
@@ -249,8 +250,14 @@ MVP 现支持两种模式：
 - `NOTION_MOCK`：`true/false`，默认 `false`（未设置时为 `false`，`wrangler.toml` 示例也为 `false`）。
 - `NOTION_API_VERSION`：默认 `2022-06-28`。
 - `NOTION_API_BASE_URL`：默认 `https://api.notion.com/v1`。
-- `CREDENTIALS_ENCRYPTION_KEY`：仅在使用 `/v1/me/notion-credentials` 保存凭证时需要，非每次提交模式的必需项。
+- `NOTION_OAUTH_CLIENT_ID`：Notion OAuth 集成的 Client ID。
+- `NOTION_OAUTH_REDIRECT_URI`：Notion OAuth 回调地址（需与 Notion Integration 配置一致）。
+- `CREDENTIALS_ENCRYPTION_KEY`：用于加密存储 OAuth access/refresh token（`/v1/auth/notion/callback`、`/v1/auth/notion/refresh`、`/v1/me/notion-credentials` 均依赖）。
 - `LOG_LEVEL`：日志级别，支持 `debug/info/warn/error`，默认 `info`。
+
+需要的 Secret：
+
+- `NOTION_OAUTH_CLIENT_SECRET`：Notion OAuth 集成的 Client Secret（建议仅配置为 Secret，不放在 `[vars]`）。
 
 ### CREDENTIALS_ENCRYPTION_KEY 如何配置
 
@@ -271,10 +278,10 @@ npx wrangler secret put CREDENTIALS_ENCRYPTION_KEY --name tonotionapi
 - 已保存的用户凭证会使用这个 key 进行加密/解密。
 - 变更该 key 后，历史凭证将无法解密，需要用户重新保存 Notion 凭证。
 
-### 首次授权（设置 notion_connected=true）
+### 首次授权（真实 OAuth）
 
 当前实现会在同步前校验 `notion_connected`，如果未授权会返回 `NOTION_NOT_CONNECTED`。  
-MVP 阶段可用以下方式完成授权标记：
+推荐按以下步骤完成真实 OAuth 授权：
 
 1. 获取 OAuth state（保存返回的 `state`）：
 
@@ -283,16 +290,14 @@ curl "https://tonotion.iiioiii.xin/v1/auth/notion/start" \
   -H "Authorization: Bearer <API_TOKEN>"
 ```
 
-2. 回调标记授权成功（将 `<STATE_FROM_START>` 替换为上一步返回的 state）：
+2. 打开上一步响应中的 `authorize_url`，在浏览器中完成 Notion 授权。
+3. Notion 会回调到 `NOTION_OAUTH_REDIRECT_URI`（形如 `/v1/auth/notion/callback?code=...&state=...`），服务端会完成 token 交换并加密保存凭证。
+4. 若 access token 过期，可调用：
 
 ```bash
-curl "https://tonotion.iiioiii.xin/v1/auth/notion/callback?code=demo&state=<STATE_FROM_START>"
+curl -X POST "https://tonotion.iiioiii.xin/v1/auth/notion/refresh" \
+  -H "Authorization: Bearer <API_TOKEN>"
 ```
-
-说明：
-
-- 该回调是当前 MVP 简化实现，仅用于设置授权状态。
-- 后续若切换完整 OAuth，会改为真实 token 交换流程。
 
 本地真实联调示例（每次提交携带 `notion_api_token`）：
 
@@ -318,7 +323,7 @@ curl -X POST "https://tonotion.iiioiii.xin/v1/ingest" \
 
 注意：
 
-- `/v1/auth/notion/callback` 目前仍是 MVP 简化实现（仅标记 `notion_connected=true`），不含完整 OAuth token 交换/刷新。
+- `/v1/auth/notion/callback` 已接入真实 token 交换，并加密保存 access/refresh token。
 - 真实写入时，请在每次 `POST /v1/ingest` 请求体中提供 `notion_api_token`。
 - `POST /v1/items/{itemId}/retry` 在真实模式下也需要在请求体里提供 `notion_api_token`。
 - 当前仅支持“Page 目标”模式（不再使用 database 目标模式）。
@@ -539,10 +544,13 @@ npm run d1:migrate:remote
 - `NOTION_MOCK`：生产建议设为 `"false"`
 - `NOTION_API_VERSION`：默认 `2022-06-28`
 - `NOTION_API_BASE_URL`：默认 `https://api.notion.com/v1`
+- `NOTION_OAUTH_CLIENT_ID`：Notion OAuth Client ID
+- `NOTION_OAUTH_REDIRECT_URI`：Notion OAuth 回调地址
 
-如需使用 `/v1/me/notion-credentials` 保存用户凭证，配置 Secret：
+如需使用 OAuth 或 `/v1/me/notion-credentials` 保存用户凭证，配置 Secret：
 
 ```bash
+npx wrangler secret put NOTION_OAUTH_CLIENT_SECRET
 npx wrangler secret put CREDENTIALS_ENCRYPTION_KEY
 ```
 

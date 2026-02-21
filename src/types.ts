@@ -63,6 +63,8 @@ export interface AppUser {
 export interface UserNotionCredential {
   user_id: string;
   token_hint: string | null;
+  has_refresh_token: boolean;
+  access_token_expires_at: string | null;
   api_version: string;
   api_base_url: string;
   created_at: string;
@@ -73,6 +75,9 @@ export interface UserNotionCredentialSecret extends UserNotionCredential {
   token_ciphertext: string;
   token_iv: string;
   token_tag: string;
+  refresh_token_ciphertext: string | null;
+  refresh_token_iv: string | null;
+  refresh_token_tag: string | null;
 }
 
 export interface AuditLog {

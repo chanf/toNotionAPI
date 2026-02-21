@@ -180,6 +180,27 @@ paths:
         '400':
           $ref: '#/components/responses/BadRequest'
 
+  /v1/auth/notion/refresh:
+    post:
+      tags: [Auth]
+      summary: Refresh current user's Notion OAuth token
+      operationId: notionAuthRefresh
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Token refreshed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthRefreshResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
   /v1/settings/notion-target:
     put:
       tags: [Settings]
@@ -919,6 +940,43 @@ components:
         workspace_name:
           type: string
           nullable: true
+        workspace_id:
+          type: string
+          nullable: true
+        workspace_icon:
+          type: string
+          nullable: true
+        bot_id:
+          type: string
+          nullable: true
+        has_refresh_token:
+          type: boolean
+        access_token_expires_at:
+          type: string
+          nullable: true
+
+    AuthRefreshResponse:
+      type: object
+      properties:
+        refreshed:
+          type: boolean
+        workspace_name:
+          type: string
+          nullable: true
+        workspace_id:
+          type: string
+          nullable: true
+        workspace_icon:
+          type: string
+          nullable: true
+        bot_id:
+          type: string
+          nullable: true
+        has_refresh_token:
+          type: boolean
+        access_token_expires_at:
+          type: string
+          nullable: true
 
     UpdateNotionTargetRequest:
       type: object
@@ -1045,6 +1103,11 @@ components:
         user_id:
           type: string
         token_hint:
+          type: string
+          nullable: true
+        has_refresh_token:
+          type: boolean
+        access_token_expires_at:
           type: string
           nullable: true
         api_version:
