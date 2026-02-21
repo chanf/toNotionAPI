@@ -72,7 +72,7 @@ npm run deploy -- --name tonotionapi --keep-vars
 5. 初始化超级管理员 token（见下文“首次创建超级管理员 Token”），然后访问：
 
 ```text
-https://tonotion.iiioiii.xin/console
+https://your-worker.example.com/console
 ```
 
 6. 在 `/console` 中完成：
@@ -183,10 +183,10 @@ npm run d1:migrate:remote
 
 后端会校验 `Authorization: Bearer <token>`，并在 D1 表 `api_access_tokens` 中验证哈希值。
 
-1. 准备一个明文 token（示例：`wx2n_prod_xxx`）。
+1. 准备一个明文 token（示例：`<YOUR_API_TOKEN>`）。
 2. 生成 SHA-256 哈希：
 ```bash
-npm run token:hash -- "wx2n_prod_xxx"
+npm run token:hash -- "<YOUR_API_TOKEN>"
 ```
 3. 把上一步输出的哈希写入 D1（本地示例）：
 ```bash
@@ -206,7 +206,7 @@ VALUES
 
 ```bash
 # 1) 生成一个明文超管 token（可自定义）
-SUPER_ADMIN_TOKEN="wx2n_$(date +%Y%m%d_%H%M%S)"
+SUPER_ADMIN_TOKEN="<YOUR_SUPER_ADMIN_TOKEN>"
 TOKEN_ID="token-superadmin-feng-$(date +%s)"
 
 # 2) 计算哈希
@@ -227,11 +227,11 @@ echo \"SUPER_ADMIN_TOKEN=$SUPER_ADMIN_TOKEN\"
 验证超管 token 是否生效：
 
 ```bash
-curl "https://tonotion.iiioiii.xin/v1/me" \
+curl "https://your-worker.example.com/v1/me" \
   -H "Authorization: Bearer $SUPER_ADMIN_TOKEN"
 ```
 
-返回中出现 `is_admin: true` 即表示可用于 `https://tonotion.iiioiii.xin/console` 登录。
+返回中出现 `is_admin: true` 即表示可用于 `https://your-worker.example.com/console` 登录。
 
 注意：
 
@@ -246,7 +246,7 @@ curl "https://tonotion.iiioiii.xin/v1/me" \
 
 获取 `API_TOKEN` 的推荐方式：
 
-1. 用 `SUPER_ADMIN_TOKEN` 登录 `https://tonotion.iiioiii.xin/console`。
+1. 用 `SUPER_ADMIN_TOKEN` 登录 `https://your-worker.example.com/console`。
 2. 在“我的 Token”或管理员的“用户 Token 管理”里创建 token。
 3. 创建响应里的 `token` 明文只会返回一次，请立即保存。
 
@@ -301,7 +301,7 @@ npx wrangler secret put CREDENTIALS_ENCRYPTION_KEY --name tonotionapi
 1. 获取 OAuth state（保存返回的 `state`）：
 
 ```bash
-curl "https://tonotion.iiioiii.xin/v1/auth/notion/start" \
+curl "https://your-worker.example.com/v1/auth/notion/start" \
   -H "Authorization: Bearer <API_TOKEN>"
 ```
 
@@ -310,7 +310,7 @@ curl "https://tonotion.iiioiii.xin/v1/auth/notion/start" \
 4. 若 access token 过期，可调用：
 
 ```bash
-curl -X POST "https://tonotion.iiioiii.xin/v1/auth/notion/refresh" \
+curl -X POST "https://your-worker.example.com/v1/auth/notion/refresh" \
   -H "Authorization: Bearer <API_TOKEN>"
 ```
 
@@ -326,7 +326,7 @@ npm run dev
 示例：提交 ingest（真实模式）
 
 ```bash
-curl -X POST "https://tonotion.iiioiii.xin/v1/ingest" \
+curl -X POST "https://your-worker.example.com/v1/ingest" \
   -H "Authorization: Bearer <API_TOKEN>" \
   -H "Content-Type: application/json" \
   -d '{
@@ -350,7 +350,7 @@ curl -X POST "https://tonotion.iiioiii.xin/v1/ingest" \
 示例（推荐）：
 
 ```bash
-curl -X PUT "https://tonotion.iiioiii.xin/v1/me/notion-target" \
+curl -X PUT "https://your-worker.example.com/v1/me/notion-target" \
   -H "Authorization: Bearer <API_TOKEN>" \
   -H "Content-Type: application/json" \
   -d '{
@@ -456,7 +456,7 @@ npm run d1:migrate:local
 npm run dev
 ```
 
-默认开发 token：`dev-token`（可在 `wrangler.toml` 的 `[vars]` 中调整）。
+默认开发 token：由 `WX2NOTION_DEV_TOKEN` 配置（可在 `wrangler.toml` 的 `[vars]` 中调整）。
 说明：仅当未绑定 D1 时使用该回退逻辑；绑定 D1 后将以 `api_access_tokens` 为准。
 
 ## 测试与类型检查
@@ -474,7 +474,7 @@ npm test
 
 ```bash
 WEB_TOOL_API_TOKEN="<API_TOKEN>" \
-WEB_TOOL_API_BASE_URL="https://tonotion.iiioiii.xin" \
+WEB_TOOL_API_BASE_URL="https://your-worker.example.com" \
 npm run test:web-tool
 ```
 
@@ -490,7 +490,7 @@ http://127.0.0.1:4173
 - 该工具在 `test/web-tool` 下，是独立的本地页面与本地代理服务。
 - 页面输入“公众号 URL + notion_api_token”，本地服务会将两者一起提交到 `/v1/ingest` 并轮询到最终状态。
 - 默认端口为 `4173`，可通过 `WEB_TOOL_PORT` 覆盖。
-- 若未设置 `WEB_TOOL_API_BASE_URL`，默认使用 `https://tonotion.iiioiii.xin`。
+- 若未设置 `WEB_TOOL_API_BASE_URL`，默认使用 `https://your-worker.example.com`。
 - `WEB_TOOL_API_TOKEN` 就是普通的 `API_TOKEN`，可在 `/console` 的“我的 Token”中创建。
 - `notion_api_token` 由用户每次提交时输入，不走服务端固定环境变量。
 
@@ -498,9 +498,10 @@ http://127.0.0.1:4173
 
 服务内置了一个最小管理后台页面，便于手工管理用户、Token、Notion 凭证与目标页。
 
-- 访问地址：`/console`（例如 `https://tonotion.iiioiii.xin/console`）
+- 访问地址：`/console`（例如 `https://your-worker.example.com/console`）
 - 登录方式：输入任意有效 API Token，通过 `/v1/console/login` 换取 HttpOnly 会话 Cookie（`/v1/console/logout` 清理）。
 - 控制台会显示会话剩余时间，并在临近过期时自动调用 `/v1/console/refresh` 续期。
+- 未登录状态下仅显示“会话登录”分区；登录成功（或会话有效）后才会显示其他功能分区。
 - 页面布局为“左侧菜单 + 右侧工作区”，默认进入“会话登录”分区。
 - 左侧菜单按功能分组：基础功能（会话登录/个人配置/同步测试）与超管功能（用户管理/用户 Token/审计日志）。
 - 超管功能菜单仅在 `is_admin=true` 时显示；普通用户不会看到或进入超管分区。
@@ -527,7 +528,7 @@ http://127.0.0.1:4173
 
 ```bash
 API_TOKEN="<API_TOKEN>" \
-API_BASE_URL="https://tonotion.iiioiii.xin" \
+API_BASE_URL="https://your-worker.example.com" \
 npm run ingest:online -- \
   --source-url "https://mp.weixin.qq.com/s/BR7smBzxDaLcH8j8M6oJ9A" \
   --notion-token "<NOTION_API_TOKEN>"
@@ -617,7 +618,7 @@ npx wrangler tail tonotionapi
 
 ## FAQ（部署排障）
 
-### Q1：`https://tonotion.iiioiii.xin/docs` 无法访问（404），但 `workers.dev` 可以访问，为什么？
+### Q1：`https://your-worker.example.com/docs` 无法访问（404），但 `workers.dev` 可以访问，为什么？
 
 常见原因：
 
@@ -626,13 +627,13 @@ npx wrangler tail tonotionapi
 
 解决方案：
 
-1. 在 `Pages -> tonotionapi -> Custom domains` 中移除 `tonotion.iiioiii.xin`。
+1. 在 `Pages -> tonotionapi -> Custom domains` 中移除 `your-worker.example.com`。
 2. 在 `DNS` 中删除旧的 `tonotion` 记录（如 A/CNAME）。
-3. 在 `Workers & Pages -> tonotionapi (Worker) -> Domains` 重新添加 `tonotion.iiioiii.xin`。
+3. 在 `Workers & Pages -> tonotionapi (Worker) -> Domains` 重新添加 `your-worker.example.com`。
 4. 等待 1-5 分钟后重新验证：
-   - `https://tonotion.iiioiii.xin/healthz`
-   - `https://tonotion.iiioiii.xin/docs`
-   - `https://tonotion.iiioiii.xin/openapi.yaml`
+   - `https://your-worker.example.com/healthz`
+   - `https://your-worker.example.com/docs`
+   - `https://your-worker.example.com/openapi.yaml`
 
 ### Q2：部署时报错 `10021`（`binding DB of type d1 must have a database that already exists`）怎么办？
 
@@ -695,6 +696,6 @@ npx wrangler tail tonotionapi
    ```
 2. 在 Cloudflare Dashboard 查看最新 Deployment 是否更新。
 3. 验证线上接口：
-   - `https://tonotion.iiioiii.xin/healthz`
-   - `https://tonotion.iiioiii.xin/docs`
-   - `https://tonotion.iiioiii.xin/openapi.yaml`
+   - `https://your-worker.example.com/healthz`
+   - `https://your-worker.example.com/docs`
+   - `https://your-worker.example.com/openapi.yaml`

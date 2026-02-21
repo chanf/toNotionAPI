@@ -1180,6 +1180,7 @@ function buildConsoleHtml(): string {
       const ingestTestResultEl = document.getElementById("ingestTestResult");
       const menuButtons = Array.from(document.querySelectorAll(".menu-btn"));
       const viewSections = Array.from(document.querySelectorAll(".view-section"));
+      const authRequiredMenuButtons = menuButtons.filter((button) => button.dataset.target !== "section-login");
 
       const INGEST_FINAL_STATUSES = new Set(["SYNCED", "SYNC_FAILED", "PARSE_FAILED"]);
       const ADMIN_SECTION_IDS = new Set([
@@ -1192,6 +1193,7 @@ function buildConsoleHtml(): string {
       let sessionExpiresAtMs = null;
       let sessionTimerHandle = null;
       let sessionRefreshInFlight = false;
+      let isAuthenticatedSession = false;
       let isAdminSession = false;
 
       function isAdminSectionId(sectionId) {
@@ -1200,8 +1202,11 @@ function buildConsoleHtml(): string {
 
       function activateSection(sectionId) {
         let targetId = sectionId;
+        if (!isAuthenticatedSession && targetId !== "section-login") {
+          targetId = "section-login";
+        }
         if (isAdminSectionId(targetId) && !isAdminSession) {
-          targetId = "section-profile";
+          targetId = isAuthenticatedSession ? "section-profile" : "section-login";
         }
         const targetExists = viewSections.some((section) => section.id === targetId);
         if (!targetExists) {
@@ -1212,6 +1217,17 @@ function buildConsoleHtml(): string {
         }
         for (const button of menuButtons) {
           button.classList.toggle("is-active", button.dataset.target === targetId);
+        }
+      }
+
+      function setAuthenticatedVisibility(isAuthenticated) {
+        isAuthenticatedSession = Boolean(isAuthenticated);
+        for (const button of authRequiredMenuButtons) {
+          button.style.display = isAuthenticatedSession ? "" : "none";
+        }
+        if (!isAuthenticatedSession) {
+          setAdminVisibility(false);
+          activateSection("section-login");
         }
       }
 
@@ -1364,8 +1380,7 @@ function buildConsoleHtml(): string {
               clearSessionState();
               setStatus("会话已失效，请重新登录");
               meProfileEl.textContent = "尚未加载";
-              setAdminVisibility(false);
-              activateSection("section-login");
+              setAuthenticatedVisibility(false);
             }
             return;
           }
@@ -1382,10 +1397,11 @@ function buildConsoleHtml(): string {
           const { resp, body } = await api("/v1/me", { method: "GET" });
           if (!resp.ok) {
             meProfileEl.textContent = "加载失败: " + pretty(body);
-            setAdminVisibility(false);
             if (resp.status === 401) {
+              setAuthenticatedVisibility(false);
               setStatus("未登录");
-              activateSection("section-login");
+            } else {
+              setAdminVisibility(false);
             }
             return;
           }
@@ -1397,6 +1413,7 @@ function buildConsoleHtml(): string {
             "<span class='chip'>status: " + (user.status || "-") + "</span>"
           ];
           meProfileEl.innerHTML = chips.join("");
+          setAuthenticatedVisibility(true);
           setAdminVisibility(isAdmin);
           setStatus("登录成功（" + (isAdmin ? "超管" : "普通用户") + "）");
           activateSection("section-profile");
@@ -1683,6 +1700,7 @@ function buildConsoleHtml(): string {
           }
           applySessionExpiry(body && body.expires_at);
           tokenInputEl.value = "";
+          setAuthenticatedVisibility(true);
           setStatus("会话登录成功");
           await loadProfile();
           await refreshSelfTokens();
@@ -1706,8 +1724,7 @@ function buildConsoleHtml(): string {
         clearSessionState();
         setStatus("已退出登录");
         meProfileEl.textContent = "尚未加载";
-        setAdminVisibility(false);
-        activateSection("section-login");
+        setAuthenticatedVisibility(false);
       });
 
       document.getElementById("saveTargetBtn").addEventListener("click", async () => {
@@ -1937,8 +1954,7 @@ function buildConsoleHtml(): string {
         });
       }
 
-      setAdminVisibility(false);
-      activateSection("section-login");
+      setAuthenticatedVisibility(false);
 
       (async function bootstrap() {
         try {
@@ -1947,11 +1963,11 @@ function buildConsoleHtml(): string {
             clearSessionState();
             setStatus("未登录");
             meProfileEl.textContent = "尚未加载";
-            setAdminVisibility(false);
-            activateSection("section-login");
+            setAuthenticatedVisibility(false);
             return;
           }
           applySessionExpiry(body && body.session_expires_at);
+          setAuthenticatedVisibility(true);
           await loadProfile();
           await refreshSelfTokens();
           await refreshNotionCredential();
@@ -1959,8 +1975,7 @@ function buildConsoleHtml(): string {
           clearSessionState();
           setStatus("未登录");
           meProfileEl.textContent = "尚未加载";
-          setAdminVisibility(false);
-          activateSection("section-login");
+          setAuthenticatedVisibility(false);
         }
       })();
     </script>
