@@ -1455,6 +1455,75 @@ describe("workers backend api", () => {
     expect(retryMissing.status).toBe(404);
   });
 
+  it("supports queue-based process flow when PROCESS_ITEM_QUEUE is configured", async () => {
+    const store = new InMemoryStore();
+    const queuedMessages: unknown[] = [];
+    const envWithQueue: Env = {
+      ...DEV_ENV,
+      PROCESS_ITEM_QUEUE: {
+        send: async (message: unknown) => {
+          queuedMessages.push(message);
+        }
+      }
+    };
+    const app = createApp({ store });
+    const ctx = new TestContext();
+
+    await connectNotion(app, ctx, envWithQueue);
+    await setTargetPage(app, ctx, envWithQueue);
+
+    const ingest = await sendJson(
+      app,
+      ctx,
+      "/v1/ingest",
+      "POST",
+      {
+        client_item_id: "queue-flow-1",
+        source_url: "https://mp.weixin.qq.com/s/queue-flow-1",
+        raw_text: "queue flow content",
+        notion_api_token: "ntn_queue_token_123456"
+      },
+      true,
+      envWithQueue
+    );
+    expect(ingest.status).toBe(202);
+    expect(queuedMessages.length).toBe(1);
+
+    const itemId = (await ingest.json() as { item_id: string }).item_id;
+    const itemBeforeConsume = await send(app, ctx, `/v1/items/${itemId}`, {
+      method: "GET",
+      headers: AUTH_HEADER
+    }, envWithQueue);
+    expect(itemBeforeConsume.status).toBe(200);
+    const itemBeforePayload = await itemBeforeConsume.json() as {
+      item: { status: string };
+    };
+    expect(itemBeforePayload.item.status).toBe("RECEIVED");
+
+    const ack = vi.fn();
+    const retry = vi.fn();
+    await app.queue(
+      {
+        messages: [
+          {
+            body: queuedMessages[0],
+            id: "queue-message-1",
+            attempts: 1,
+            ack,
+            retry
+          }
+        ]
+      },
+      envWithQueue,
+      ctx
+    );
+    expect(ack).toHaveBeenCalledTimes(1);
+    expect(retry).toHaveBeenCalledTimes(0);
+
+    const synced = await waitForStatus(app, ctx, itemId, "SYNCED", envWithQueue);
+    expect(synced.notion_page_id).toBeTruthy();
+  });
+
   it("ingest -> synced happy path", async () => {
     const app = createApp({ store: new InMemoryStore() });
     const ctx = new TestContext();

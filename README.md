@@ -123,7 +123,7 @@ https://your-worker.example.com/console
 
 说明：
 - 当前主线已接入 D1 持久化（通过 `DB` 绑定）。
-- 异步任务仍使用 `waitUntil`，后续建议接入 Queues。
+- 已支持 Queue 异步消费（配置 `PROCESS_ITEM_QUEUE` 绑定后启用）；未配置时会回退到 `waitUntil`。
 - 已支持真实 Notion 写入（创建 page + 追加 blocks），是否 mock 由 `NOTION_MOCK` 控制。
 - 公众号 URL 处理链路：抓取文章 HTML -> 提取正文 -> 转 Markdown -> 转 Notion Blocks -> 写入 Notion。
 
@@ -587,6 +587,20 @@ npx wrangler secret put CONSOLE_SESSION_SECRET
 ```
 
 如果这里提示 Worker 不存在，请先执行一次 `npm run deploy -- --name tonotionapi`，再回到本步骤配置 secret。
+
+### 4.1) （推荐）启用 Queue 异步消费
+
+默认情况下，服务会在未配置 Queue 绑定时回退到 `waitUntil`。生产环境建议开启 Queue：
+
+```bash
+# 1) 创建队列
+npx wrangler queues create tonotion-process-item
+
+# 2) 在 wrangler.toml 取消注释 queues.producers / queues.consumers 配置
+#    binding 名称使用 PROCESS_ITEM_QUEUE
+```
+
+启用后，`/v1/ingest` 与 `/v1/items/{itemId}/retry` 会优先把任务投递到 Queue，由 Worker `queue` consumer 处理。
 
 ### 5) 部署 Worker
 

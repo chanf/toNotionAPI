@@ -249,7 +249,7 @@
 
 1. 设计文档部分章节仍可能滞后于实现，需要持续同步维护
 2. legacy 接口（如 `/v1/settings/notion-target`）仍需评估最终下线窗口
-3. 异步执行仍依赖 `waitUntil`，生产级建议迁移到 Queues
+3. 已支持 Queue 异步消费（`PROCESS_ITEM_QUEUE`）；未配置时仍会回退 `waitUntil`
 
 ---
 

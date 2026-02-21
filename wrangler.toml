@@ -17,6 +17,19 @@ LOG_LEVEL = "info"
 # npx wrangler secret put CREDENTIALS_ENCRYPTION_KEY --name tonotionapi
 # npx wrangler secret put CONSOLE_SESSION_SECRET --name tonotionapi
 
+# Optional: Queue binding for async pipeline (recommended for production)
+# 1) Create queue: npx wrangler queues create tonotion-process-item
+# 2) Uncomment producer/consumer bindings below
+# [[queues.producers]]
+# queue = "tonotion-process-item"
+# binding = "PROCESS_ITEM_QUEUE"
+#
+# [[queues.consumers]]
+# queue = "tonotion-process-item"
+# max_batch_size = 10
+# max_batch_timeout = 5
+# max_retries = 5
+
 [[d1_databases]]
 binding = "DB"
 database_name = "wx2notion-db"

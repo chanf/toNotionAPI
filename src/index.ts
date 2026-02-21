@@ -19,10 +19,27 @@ export interface Env {
   NOTION_MOCK?: string;
   LOG_LEVEL?: string;
   DB?: D1Database;
+  PROCESS_ITEM_QUEUE?: QueueBindingLike;
 }
 
 export interface ExecutionContextLike {
   waitUntil(promise: Promise<unknown>): void;
+}
+
+export interface QueueBindingLike {
+  send(message: unknown): Promise<void>;
+}
+
+export interface QueueMessageLike<T = unknown> {
+  body: T;
+  id?: string;
+  attempts?: number;
+  ack?: () => void;
+  retry?: () => void;
+}
+
+export interface QueueBatchLike<T = unknown> {
+  messages: Array<QueueMessageLike<T>>;
 }
 
 const DEMO_USER_ID = "demo-user";
@@ -43,6 +60,22 @@ type ConsoleSessionPayload = {
   scp: string[];
   adm: boolean;
   exp: number;
+};
+
+type QueueNotionRuntime = {
+  mock: boolean;
+  apiToken: string | null;
+  apiVersion: string | null;
+  apiBaseUrl: string | null;
+};
+
+type ProcessItemTaskMessage = {
+  type: "PROCESS_ITEM";
+  source: "ingest" | "retry";
+  userId: string;
+  itemId: string;
+  notion: QueueNotionRuntime;
+  queuedAt: string;
 };
 
 function isItemStatus(value: string): value is ItemStatus {
@@ -551,6 +584,24 @@ function resolveNotionRuntimeFromRequest(
   };
 }
 
+function toQueueNotionRuntime(input: NotionRuntimeInput): QueueNotionRuntime {
+  return {
+    mock: Boolean(input.mock),
+    apiToken: input.apiToken?.trim() || null,
+    apiVersion: input.apiVersion?.trim() || null,
+    apiBaseUrl: input.apiBaseUrl ? normalizeApiBaseUrl(input.apiBaseUrl) : null
+  };
+}
+
+function toNotionRuntimeInputFromQueue(input: QueueNotionRuntime): NotionRuntimeInput {
+  return {
+    mock: input.mock,
+    apiToken: input.apiToken,
+    apiVersion: input.apiVersion,
+    apiBaseUrl: input.apiBaseUrl
+  };
+}
+
 function normalizeExpiresAt(value: unknown): string | null {
   if (value === null || value === undefined) {
     return null;
@@ -584,6 +635,47 @@ function normalizeOptionalIsoDatetime(value: string | null): string | "__INVALID
 
 function isObjectBody(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+function isQueueNotionRuntime(value: unknown): value is QueueNotionRuntime {
+  if (!isObjectBody(value)) {
+    return false;
+  }
+  return (
+    typeof value.mock === "boolean" &&
+    (typeof value.apiToken === "string" || value.apiToken === null) &&
+    (typeof value.apiVersion === "string" || value.apiVersion === null) &&
+    (typeof value.apiBaseUrl === "string" || value.apiBaseUrl === null)
+  );
+}
+
+function isProcessItemTaskMessage(value: unknown): value is ProcessItemTaskMessage {
+  if (!isObjectBody(value)) {
+    return false;
+  }
+  return (
+    value.type === "PROCESS_ITEM" &&
+    (value.source === "ingest" || value.source === "retry") &&
+    typeof value.userId === "string" &&
+    value.userId.length > 0 &&
+    typeof value.itemId === "string" &&
+    value.itemId.length > 0 &&
+    typeof value.queuedAt === "string" &&
+    value.queuedAt.length > 0 &&
+    isQueueNotionRuntime(value.notion)
+  );
+}
+
+function ackQueueMessage(message: QueueMessageLike<unknown>): void {
+  if (typeof message.ack === "function") {
+    message.ack();
+  }
+}
+
+function retryQueueMessage(message: QueueMessageLike<unknown>): void {
+  if (typeof message.retry === "function") {
+    message.retry();
+  }
 }
 
 function parsePageSize(url: URL): number {
@@ -2054,6 +2146,63 @@ export function createApp(options?: { store?: Store }) {
     });
   }
 
+  async function dispatchProcessItemTask(
+    store: Store,
+    input: {
+      env: Env;
+      ctx: ExecutionContextLike;
+      logger: Logger;
+      source: "ingest" | "retry";
+      userId: string;
+      itemId: string;
+      notion: NotionRuntimeInput;
+    }
+  ): Promise<void> {
+    const taskLogger = input.logger.child({
+      source: input.source,
+      user_id: input.userId,
+      item_id: input.itemId
+    });
+    const taskMessage: ProcessItemTaskMessage = {
+      type: "PROCESS_ITEM",
+      source: input.source,
+      userId: input.userId,
+      itemId: input.itemId,
+      notion: toQueueNotionRuntime(input.notion),
+      queuedAt: nowIso()
+    };
+
+    if (input.env.PROCESS_ITEM_QUEUE) {
+      try {
+        await input.env.PROCESS_ITEM_QUEUE.send(taskMessage);
+        taskLogger.info("pipeline.task.enqueued");
+        return;
+      } catch (error) {
+        taskLogger.error("pipeline.task.enqueue_failed", {
+          error: serializeError(error)
+        });
+      }
+    } else {
+      taskLogger.warn("pipeline.queue.binding_missing", {
+        queue_binding: "PROCESS_ITEM_QUEUE"
+      });
+    }
+
+    taskLogger.info("pipeline.task.waituntil_fallback");
+    input.ctx.waitUntil(
+      processItem(store, {
+        userId: input.userId,
+        itemId: input.itemId,
+        notion: input.notion,
+        logger: taskLogger
+      }).catch((error) => {
+        taskLogger.error("pipeline.unhandled", {
+          error: serializeError(error)
+        });
+      })
+    );
+  }
+
   async function authenticateByAccessToken(token: string, env: Env): Promise<AuthResult> {
     const expected = env.WX2NOTION_DEV_TOKEN ?? "dev-token";
     if (!env.DB && token === expected) {
@@ -2476,22 +2625,15 @@ export function createApp(options?: { store?: Store }) {
       });
 
       if (!result.duplicated) {
-        const taskLogger = logger.child({
-          item_id: result.item.id,
-          user_id: auth.auth.userId
+        await dispatchProcessItemTask(store, {
+          env,
+          ctx,
+          logger,
+          source: "ingest",
+          userId: auth.auth.userId,
+          itemId: result.item.id,
+          notion: notionRuntime
         });
-        ctx.waitUntil(
-          processItem(store, {
-            userId: auth.auth.userId,
-            itemId: result.item.id,
-            notion: notionRuntime,
-            logger: taskLogger
-          }).catch((error) => {
-            taskLogger.error("pipeline.unhandled", {
-              error: serializeError(error)
-            });
-          })
-        );
       }
 
       logger.info("ingest.accepted", {
@@ -2621,22 +2763,15 @@ export function createApp(options?: { store?: Store }) {
         itemId,
         fields: { status: "RECEIVED", error: null }
       });
-      const taskLogger = logger.child({
-        item_id: itemId,
-        user_id: auth.auth.userId
+      await dispatchProcessItemTask(store, {
+        env,
+        ctx,
+        logger,
+        source: "retry",
+        userId: auth.auth.userId,
+        itemId,
+        notion: notionRuntime
       });
-      ctx.waitUntil(
-        processItem(store, {
-          userId: auth.auth.userId,
-          itemId,
-          notion: notionRuntime,
-          logger: taskLogger
-        }).catch((error) => {
-          taskLogger.error("pipeline.unhandled", {
-            error: serializeError(error)
-          });
-        })
-      );
 
       logger.info("item.retry.accepted", {
         user_id: auth.auth.userId,
@@ -3979,6 +4114,57 @@ export function createApp(options?: { store?: Store }) {
     });
   }
 
+  async function queue(
+    batch: QueueBatchLike<unknown>,
+    env: Env,
+    _ctx: ExecutionContextLike
+  ): Promise<void> {
+    const logger = createLogger({
+      service: "tonotionapi-queue-consumer",
+      minLevel: env.LOG_LEVEL
+    });
+    const store = resolveStore(env);
+    if (!store) {
+      logger.error("queue.store_not_configured");
+      throw new Error("STORE_NOT_CONFIGURED");
+    }
+
+    for (const message of batch.messages) {
+      if (!isProcessItemTaskMessage(message.body)) {
+        logger.error("queue.message.invalid_body", {
+          message_id: message.id ?? null
+        });
+        ackQueueMessage(message);
+        continue;
+      }
+
+      const payload = message.body;
+      const taskLogger = logger.child({
+        message_id: message.id ?? null,
+        attempt: message.attempts ?? null,
+        source: payload.source,
+        user_id: payload.userId,
+        item_id: payload.itemId
+      });
+
+      try {
+        await processItem(store, {
+          userId: payload.userId,
+          itemId: payload.itemId,
+          notion: toNotionRuntimeInputFromQueue(payload.notion),
+          logger: taskLogger
+        });
+        taskLogger.info("queue.message.processed");
+        ackQueueMessage(message);
+      } catch (error) {
+        taskLogger.error("queue.message.failed", {
+          error: serializeError(error)
+        });
+        retryQueueMessage(message);
+      }
+    }
+  }
+
   async function fetch(request: Request, env: Env, ctx: ExecutionContextLike): Promise<Response> {
     const start = Date.now();
     const url = new URL(request.url);
@@ -4062,7 +4248,8 @@ export function createApp(options?: { store?: Store }) {
   }
 
   return {
-    fetch
+    fetch,
+    queue
   };
 }
 
@@ -4071,6 +4258,9 @@ const app = createApp();
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContextLike): Promise<Response> {
     return app.fetch(request, env, ctx);
+  },
+  async queue(batch: QueueBatchLike<unknown>, env: Env, ctx: ExecutionContextLike): Promise<void> {
+    return app.queue(batch, env, ctx);
   }
 };
 
