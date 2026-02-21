@@ -78,7 +78,7 @@ https://your-worker.example.com/console
 6. 在 `/console` 中完成：
 - 创建或登录普通用户
 - 创建用户 API Token（供客户端/测试工具调用）
-- 完成 Notion OAuth 授权（`/v1/auth/notion/start` + 浏览器回调）
+- 完成 Notion OAuth 授权（`/v1/auth/notion/start` + 浏览器回调，成功后会标记 `notion_connected=true`）
 - 设置目标页面
 - 在“同步测试工具”中提交公众号 URL + `notion_api_token` 验证链路
 
@@ -252,7 +252,9 @@ curl "https://your-worker.example.com/v1/me" \
 
 ## Notion 同步配置（MVP）
 
-MVP 现支持两种模式：
+当前仅支持“Page 目标”同步（不再使用 Database 目标模式）。
+
+运行形态：
 
 - `NOTION_MOCK=true`：模拟 Notion 同步（便于本地调试，不会写入真实 Notion）。
 - `NOTION_MOCK=false`：真实调用 Notion API 创建页面。
@@ -295,7 +297,7 @@ npx wrangler secret put CREDENTIALS_ENCRYPTION_KEY --name tonotionapi
 
 ### 首次授权（真实 OAuth）
 
-当前实现会在同步前校验 `notion_connected`，如果未授权会返回 `NOTION_NOT_CONNECTED`。  
+当前实现会在同步前校验 `notion_connected`（由 OAuth 回调成功后写入），如果未授权会返回 `NOTION_NOT_CONNECTED`。  
 推荐按以下步骤完成真实 OAuth 授权：
 
 1. 获取 OAuth state（保存返回的 `state`）：
@@ -306,7 +308,7 @@ curl "https://your-worker.example.com/v1/auth/notion/start" \
 ```
 
 2. 打开上一步响应中的 `authorize_url`，在浏览器中完成 Notion 授权。
-3. Notion 会回调到 `NOTION_OAUTH_REDIRECT_URI`（形如 `/v1/auth/notion/callback?code=...&state=...`），服务端会完成 token 交换并加密保存凭证。
+3. Notion 会回调到 `NOTION_OAUTH_REDIRECT_URI`（形如 `/v1/auth/notion/callback?code=...&state=...`），服务端会完成 token 交换、加密保存凭证，并把用户标记为 `notion_connected=true`。
 4. 若 access token 过期，可调用：
 
 ```bash
@@ -339,7 +341,7 @@ curl -X POST "https://your-worker.example.com/v1/ingest" \
 注意：
 
 - `/v1/auth/notion/callback` 已接入真实 token 交换，并加密保存 access/refresh token。
-- 当前同步主链路仍为“请求级 token”模式：不会自动读取 `/v1/me/notion-credentials` 里的凭证作为 ingest/retry 的默认 token。
+- 当前同步主链路仍为“请求级 token”模式：不会自动读取 `/v1/me/notion-credentials` 里的凭证作为 ingest/retry 的默认 token（即使已保存凭证，ingest/retry 仍建议显式传 `notion_api_token`）。
 - 真实写入时，请在每次 `POST /v1/ingest` 请求体中提供 `notion_api_token`。
 - `POST /v1/items/{itemId}/retry` 在真实模式下也需要在请求体里提供 `notion_api_token`。
 - 默认 `NOTION_API_VERSION` 已升级为 `2025-09-03`。
