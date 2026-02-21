@@ -88,7 +88,7 @@
 ### 6.1 新增：用户表
 
 `app_users`
-- `id TEXT PRIMARY KEY`（如 `feng`）
+- `id TEXT PRIMARY KEY`（如 `admin-user`）
 - `display_name TEXT`
 - `role TEXT CHECK(role IN ('SUPER_ADMIN','USER')) NOT NULL`
 - `status TEXT CHECK(status IN ('ACTIVE','DISABLED','DELETED')) NOT NULL DEFAULT 'ACTIVE'`

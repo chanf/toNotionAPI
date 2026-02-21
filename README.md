@@ -202,12 +202,12 @@ VALUES
 
 ### 首次创建超级管理员 Token（用于 `/console` 登录）
 
-如果你还没有任何管理员 token，可按下面步骤初始化一个超管（示例 `user_id=feng`）：
+如果你还没有任何管理员 token，可按下面步骤初始化一个超管（示例 `user_id=admin-user`）：
 
 ```bash
 # 1) 生成一个明文超管 token（可自定义）
 SUPER_ADMIN_TOKEN="<YOUR_SUPER_ADMIN_TOKEN>"
-TOKEN_ID="token-superadmin-feng-$(date +%s)"
+TOKEN_ID="token-superadmin-admin-user-$(date +%s)"
 
 # 2) 计算哈希
 TOKEN_HASH=$(npm run -s token:hash -- "$SUPER_ADMIN_TOKEN")
@@ -217,7 +217,7 @@ npx wrangler d1 execute wx2notion-db --remote --command "
 INSERT INTO api_access_tokens
   (id, user_id, token_hash, label, scopes, is_active, created_at, updated_at)
 VALUES
-  ('$TOKEN_ID', 'feng', '$TOKEN_HASH', 'super-admin-bootstrap', '*', 1, datetime('now'), datetime('now'));
+  ('$TOKEN_ID', 'admin-user', '$TOKEN_HASH', 'super-admin-bootstrap', '*', 1, datetime('now'), datetime('now'));
 "
 
 # 4) 输出明文 token（仅此处可见，请妥善保存）

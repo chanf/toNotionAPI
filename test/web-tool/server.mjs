@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 
 const FINAL_STATUSES = new Set(["SYNCED", "SYNC_FAILED", "PARSE_FAILED"]);
 const DEFAULT_BASE_URL = normalizeBaseUrl(
-  process.env.WEB_TOOL_API_BASE_URL ?? "https://tonotion.iiioiii.xin"
+  process.env.WEB_TOOL_API_BASE_URL ?? "https://your-worker.example.com"
 );
 const API_TOKEN = (process.env.WEB_TOOL_API_TOKEN ?? "").trim();
 const PORT = parsePositiveInt(process.env.WEB_TOOL_PORT, 4173);

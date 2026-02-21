@@ -1,4 +1,4 @@
-const DEFAULT_BASE_URL = "https://tonotion.iiioiii.xin";
+const DEFAULT_BASE_URL = "https://your-worker.example.com";
 const DEFAULT_SOURCE_URL = "https://mp.weixin.qq.com/s/_P_1E-Stfo-8-eCRUh8Ygg";
 const DEFAULT_POLL_TIMEOUT_SEC = 30;
 const DEFAULT_POLL_INTERVAL_MS = 2000;
