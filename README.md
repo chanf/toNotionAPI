@@ -58,6 +58,7 @@ npm run d1:migrate:remote
 ```bash
 npx wrangler secret put NOTION_OAUTH_CLIENT_SECRET --name tonotionapi
 npx wrangler secret put CREDENTIALS_ENCRYPTION_KEY --name tonotionapi
+npx wrangler secret put CONSOLE_SESSION_SECRET --name tonotionapi
 ```
 
 如果提示 `Worker "tonotionapi" not found`，说明这是首次部署，请先执行下一步创建 Worker，再回来执行本步骤。
@@ -86,6 +87,9 @@ https://tonotion.iiioiii.xin/console
 - `GET /healthz`
 - `GET /docs`（Swagger UI 在线文档）
 - `GET /console`（管理后台 MVP 页面，内置同步测试工具）
+- `POST /v1/console/login`（控制台会话登录）
+- `POST /v1/console/logout`（控制台会话登出）
+- `GET /v1/console/session`（查询当前会话）
 - `GET /openapi.yaml`（OpenAPI 规范）
 - `POST /v1/ingest`
 - `GET /v1/items`
@@ -259,6 +263,7 @@ MVP 现支持两种模式：
 需要的 Secret：
 
 - `NOTION_OAUTH_CLIENT_SECRET`：Notion OAuth 集成的 Client Secret（建议仅配置为 Secret，不放在 `[vars]`）。
+- `CONSOLE_SESSION_SECRET`：`/console` 会话签名密钥（用于签发/校验 HttpOnly Session Cookie）。
 
 ### CREDENTIALS_ENCRYPTION_KEY 如何配置
 
@@ -479,7 +484,7 @@ http://127.0.0.1:4173
 服务内置了一个最小管理后台页面，便于手工管理用户、Token、Notion 凭证与目标页。
 
 - 访问地址：`/console`（例如 `https://tonotion.iiioiii.xin/console`）
-- 登录方式：输入任意有效 API Token（`Authorization: Bearer <token>`）
+- 登录方式：输入任意有效 API Token，通过 `/v1/console/login` 换取 HttpOnly 会话 Cookie（`/v1/console/logout` 清理）。
 - 普通用户能力：
   - 查看 `/v1/me` 资料
   - 管理自己的 `/v1/me/tokens*`
@@ -493,6 +498,7 @@ http://127.0.0.1:4173
 注意：
 
 - 若要保存“用户级 Notion 凭证”，必须配置 `CREDENTIALS_ENCRYPTION_KEY`，否则接口会返回 `CONFIG_MISSING`。
+- 若要启用 `/console` 会话登录，必须配置 `CONSOLE_SESSION_SECRET`，否则 `/v1/console/login` 会返回 `CONFIG_MISSING`。
 - `/console` 仅为 MVP 管理入口，生产环境建议结合 Access / Zero Trust 做额外访问控制。
 
 ### CLI 线上链路测试（可选）
@@ -556,6 +562,7 @@ npm run d1:migrate:remote
 ```bash
 npx wrangler secret put NOTION_OAUTH_CLIENT_SECRET
 npx wrangler secret put CREDENTIALS_ENCRYPTION_KEY
+npx wrangler secret put CONSOLE_SESSION_SECRET
 ```
 
 如果这里提示 Worker 不存在，请先执行一次 `npm run deploy -- --name tonotionapi`，再回到本步骤配置 secret。

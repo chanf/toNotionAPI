@@ -9,6 +9,7 @@ servers:
     description: Current deployment
 tags:
   - name: System
+  - name: Console
   - name: Ingest
   - name: Item
   - name: Auth
@@ -28,6 +29,71 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HealthzResponse'
+
+  /v1/console/login:
+    post:
+      tags: [Console]
+      summary: Create console session cookie with API token
+      operationId: consoleLogin
+      description: |
+        Accepts API token from `Authorization: Bearer <token>` header.
+        Also supports JSON body `{ "token": "..." }` as fallback.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConsoleLoginRequest'
+      responses:
+        '200':
+          description: Console session created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConsoleLoginResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /v1/console/logout:
+    post:
+      tags: [Console]
+      summary: Clear console session cookie
+      operationId: consoleLogout
+      responses:
+        '200':
+          description: Console session cleared
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConsoleLogoutResponse'
+
+  /v1/console/session:
+    get:
+      tags: [Console]
+      summary: Get current console session profile
+      operationId: consoleSession
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      responses:
+        '200':
+          description: Current console session profile
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MeProfileResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
 
   /v1/ingest:
     post:
@@ -702,6 +768,10 @@ components:
       type: http
       scheme: bearer
       bearerFormat: Bearer
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: tonotion_console_session
 
   parameters:
     ItemId:
@@ -762,6 +832,36 @@ components:
         status:
           type: string
           example: ok
+
+    ConsoleLoginRequest:
+      type: object
+      properties:
+        token:
+          type: string
+          nullable: true
+          description: Optional fallback when Authorization header is not provided.
+
+    ConsoleLoginResponse:
+      type: object
+      properties:
+        logged_in:
+          type: boolean
+        user_id:
+          type: string
+        is_admin:
+          type: boolean
+        expires_at:
+          type: string
+        user:
+          allOf:
+            - $ref: '#/components/schemas/AppUser'
+          nullable: true
+
+    ConsoleLogoutResponse:
+      type: object
+      properties:
+        logged_out:
+          type: boolean
 
     ErrorResponse:
       type: object

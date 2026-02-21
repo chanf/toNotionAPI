@@ -14,6 +14,7 @@ export interface Env {
   NOTION_OAUTH_CLIENT_ID?: string;
   NOTION_OAUTH_CLIENT_SECRET?: string;
   NOTION_OAUTH_REDIRECT_URI?: string;
+  CONSOLE_SESSION_SECRET?: string;
   CREDENTIALS_ENCRYPTION_KEY?: string;
   NOTION_MOCK?: string;
   LOG_LEVEL?: string;
@@ -27,6 +28,8 @@ export interface ExecutionContextLike {
 const DEMO_USER_ID = "demo-user";
 const OPENAPI_SPEC_PATH = "/openapi.yaml";
 const SWAGGER_UI_DIST_BASE_URL = "https://cdn.jsdelivr.net/npm/swagger-ui-dist@5";
+const CONSOLE_SESSION_COOKIE_NAME = "tonotion_console_session";
+const CONSOLE_SESSION_TTL_SECONDS = 8 * 60 * 60;
 type AuthContext = {
   userId: string;
   isAdmin: boolean;
@@ -34,6 +37,13 @@ type AuthContext = {
   scopes: string[];
 };
 type AuthResult = { ok: true; auth: AuthContext } | { ok: false; response: Response };
+type ConsoleSessionPayload = {
+  uid: string;
+  tid: string | null;
+  scp: string[];
+  adm: boolean;
+  exp: number;
+};
 
 function isItemStatus(value: string): value is ItemStatus {
   return (ITEM_STATUSES as readonly string[]).includes(value);
@@ -136,6 +146,160 @@ function base64FromText(input: string): string {
     return maybeBuffer.from(input, "utf8").toString("base64");
   }
   return btoa(input);
+}
+
+function toBase64Url(input: string): string {
+  return input.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
+function fromBase64Url(input: string): string {
+  const padded = input.replace(/-/g, "+").replace(/_/g, "/");
+  const remainder = padded.length % 4;
+  if (remainder === 0) {
+    return padded;
+  }
+  return padded + "=".repeat(4 - remainder);
+}
+
+function textToBase64Url(input: string): string {
+  return toBase64Url(base64FromText(input));
+}
+
+function bytesToBase64Url(bytes: Uint8Array): string {
+  return toBase64Url(bytesToBase64(bytes));
+}
+
+function base64UrlToText(input: string): string | null {
+  try {
+    const bytes = base64ToBytes(fromBase64Url(input));
+    return new TextDecoder().decode(bytes);
+  } catch {
+    return null;
+  }
+}
+
+function parseCookieValue(cookieHeader: string | null, key: string): string | null {
+  if (!cookieHeader) {
+    return null;
+  }
+  const segments = cookieHeader.split(";");
+  for (const segment of segments) {
+    const [name, ...rest] = segment.split("=");
+    if (!name || rest.length === 0) {
+      continue;
+    }
+    if (name.trim() !== key) {
+      continue;
+    }
+    return rest.join("=").trim() || null;
+  }
+  return null;
+}
+
+function isConsoleSessionPayload(value: unknown): value is ConsoleSessionPayload {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const raw = value as Record<string, unknown>;
+  const scopes = raw.scp;
+  return (
+    typeof raw.uid === "string" &&
+    raw.uid.length > 0 &&
+    (typeof raw.tid === "string" || raw.tid === null) &&
+    Array.isArray(scopes) &&
+    scopes.every((scope) => typeof scope === "string") &&
+    typeof raw.adm === "boolean" &&
+    typeof raw.exp === "number" &&
+    Number.isFinite(raw.exp)
+  );
+}
+
+async function signSessionPayload(payloadPart: string, secret: string): Promise<string> {
+  if (!globalThis.crypto?.subtle) {
+    throw new Error("WebCrypto API is unavailable.");
+  }
+  const key = await globalThis.crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"]
+  );
+  const signature = await globalThis.crypto.subtle.sign(
+    "HMAC",
+    key,
+    new TextEncoder().encode(payloadPart)
+  );
+  return bytesToBase64Url(new Uint8Array(signature));
+}
+
+async function createConsoleSessionToken(auth: AuthContext, secret: string): Promise<{
+  token: string;
+  expiresAt: string;
+}> {
+  const expiresAtMs = Date.now() + CONSOLE_SESSION_TTL_SECONDS * 1000;
+  const payload: ConsoleSessionPayload = {
+    uid: auth.userId,
+    tid: auth.tokenId,
+    scp: auth.scopes,
+    adm: auth.isAdmin,
+    exp: Math.floor(expiresAtMs / 1000)
+  };
+  const payloadPart = textToBase64Url(JSON.stringify(payload));
+  const signature = await signSessionPayload(payloadPart, secret);
+  return {
+    token: `${payloadPart}.${signature}`,
+    expiresAt: new Date(expiresAtMs).toISOString()
+  };
+}
+
+async function verifyConsoleSessionToken(
+  token: string,
+  secret: string
+): Promise<ConsoleSessionPayload | null> {
+  const separator = token.indexOf(".");
+  if (separator <= 0 || separator === token.length - 1) {
+    return null;
+  }
+  const payloadPart = token.slice(0, separator);
+  const signaturePart = token.slice(separator + 1);
+  const expectedSignature = await signSessionPayload(payloadPart, secret);
+  if (expectedSignature !== signaturePart) {
+    return null;
+  }
+  const payloadText = base64UrlToText(payloadPart);
+  if (!payloadText) {
+    return null;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(payloadText);
+  } catch {
+    return null;
+  }
+  if (!isConsoleSessionPayload(parsed)) {
+    return null;
+  }
+  if (parsed.exp <= Math.floor(Date.now() / 1000)) {
+    return null;
+  }
+  return parsed;
+}
+
+function buildSessionCookieValue(token: string, secure: boolean): string {
+  const securePart = secure ? "; Secure" : "";
+  return (
+    `${CONSOLE_SESSION_COOKIE_NAME}=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${CONSOLE_SESSION_TTL_SECONDS}` +
+    securePart
+  );
+}
+
+function buildClearSessionCookieValue(secure: boolean): string {
+  const securePart = secure ? "; Secure" : "";
+  return (
+    `${CONSOLE_SESSION_COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0; ` +
+    `Expires=Thu, 01 Jan 1970 00:00:00 GMT${securePart}`
+  );
 }
 
 async function encryptSecret(plain: string, rawKey: string): Promise<{
@@ -591,14 +755,14 @@ function buildConsoleHtml(): string {
   <body>
     <div class="wrap">
       <h1>toNotion 管理后台（MVP）</h1>
-      <p class="hint">使用 API Token 登录。普通用户可管理自己的 token 与 Notion 配置；超管额外支持用户管理。</p>
+      <p class="hint">使用 API Token 登录并创建会话。普通用户可管理自己的 token 与 Notion 配置；超管额外支持用户管理。</p>
 
       <div class="card">
         <h2>登录</h2>
         <div class="row">
           <input id="tokenInput" style="flex:1; min-width:280px;" placeholder="Bearer Token，例如 wx2n_..." />
-          <button id="saveTokenBtn" class="primary">保存并加载</button>
-          <button id="clearTokenBtn">清空</button>
+          <button id="saveTokenBtn" class="primary">登录并加载</button>
+          <button id="clearTokenBtn">退出登录</button>
         </div>
         <div class="status" id="loginStatus">未登录</div>
       </div>
@@ -737,8 +901,6 @@ function buildConsoleHtml(): string {
     </div>
 
     <script>
-      const TOKEN_KEY = "tonotion_console_token";
-
       const loginStatusEl = document.getElementById("loginStatus");
       const meProfileEl = document.getElementById("meProfile");
       const adminPanelEl = document.getElementById("adminPanel");
@@ -794,14 +956,11 @@ function buildConsoleHtml(): string {
 
       async function api(path, init) {
         const token = getToken();
-        if (!token) {
-          throw new Error("请先输入 token");
+        const headers = Object.assign({}, (init && init.headers) || {});
+        if (token) {
+          headers.authorization = "Bearer " + token;
         }
-        const headers = Object.assign(
-          { authorization: "Bearer " + token },
-          (init && init.headers) || {}
-        );
-        const resp = await fetch(path, Object.assign({}, init || {}, { headers }));
+        const resp = await fetch(path, Object.assign({ credentials: "same-origin" }, init || {}, { headers }));
         const text = await resp.text();
         let body = null;
         try {
@@ -818,6 +977,9 @@ function buildConsoleHtml(): string {
           if (!resp.ok) {
             meProfileEl.textContent = "加载失败: " + pretty(body);
             adminPanelEl.style.display = "none";
+            if (resp.status === 401) {
+              setStatus("未登录");
+            }
             return;
           }
           const user = body.user || {};
@@ -996,16 +1158,44 @@ function buildConsoleHtml(): string {
           setStatus("token 不能为空");
           return;
         }
-        localStorage.setItem(TOKEN_KEY, token);
-        await loadProfile();
-        await refreshSelfTokens();
-        await refreshNotionCredential();
+        try {
+          const resp = await fetch("/v1/console/login", {
+            method: "POST",
+            headers: { authorization: "Bearer " + token },
+            credentials: "same-origin"
+          });
+          const text = await resp.text();
+          let body = null;
+          try {
+            body = text ? JSON.parse(text) : null;
+          } catch {
+            body = text;
+          }
+          if (!resp.ok) {
+            setStatus("登录失败: " + pretty(body));
+            return;
+          }
+          tokenInputEl.value = "";
+          setStatus("会话登录成功");
+          await loadProfile();
+          await refreshSelfTokens();
+          await refreshNotionCredential();
+        } catch (error) {
+          setStatus("登录失败: " + String(error));
+        }
       });
 
-      document.getElementById("clearTokenBtn").addEventListener("click", () => {
-        localStorage.removeItem(TOKEN_KEY);
+      document.getElementById("clearTokenBtn").addEventListener("click", async () => {
+        try {
+          await fetch("/v1/console/logout", {
+            method: "POST",
+            credentials: "same-origin"
+          });
+        } catch {
+          // Ignore network errors when clearing UI state.
+        }
         tokenInputEl.value = "";
-        setStatus("已清空 token");
+        setStatus("已退出登录");
         meProfileEl.textContent = "尚未加载";
         adminPanelEl.style.display = "none";
       });
@@ -1209,12 +1399,17 @@ function buildConsoleHtml(): string {
       });
 
       (async function bootstrap() {
-        const saved = localStorage.getItem(TOKEN_KEY) || "";
-        if (saved) {
-          tokenInputEl.value = saved;
+        try {
+          const { resp } = await api("/v1/console/session", { method: "GET" });
+          if (!resp.ok) {
+            setStatus("未登录");
+            return;
+          }
           await loadProfile();
           await refreshSelfTokens();
           await refreshNotionCredential();
+        } catch {
+          setStatus("未登录");
         }
       })();
     </script>
@@ -1293,15 +1488,7 @@ export function createApp(options?: { store?: Store }) {
     });
   }
 
-  async function requireUserId(request: Request, env: Env): Promise<AuthResult> {
-    const token = parseBearerToken(request.headers.get("authorization"));
-    if (!token) {
-      return {
-        ok: false,
-        response: errorResponse(401, "UNAUTHORIZED", "Missing bearer token.")
-      };
-    }
-
+  async function authenticateByAccessToken(token: string, env: Env): Promise<AuthResult> {
     const expected = env.WX2NOTION_DEV_TOKEN ?? "dev-token";
     if (!env.DB && token === expected) {
       return {
@@ -1367,6 +1554,119 @@ export function createApp(options?: { store?: Store }) {
     }
   }
 
+  async function authenticateByConsoleSession(request: Request, env: Env): Promise<AuthResult | null> {
+    const sessionToken = parseCookieValue(
+      request.headers.get("cookie"),
+      CONSOLE_SESSION_COOKIE_NAME
+    );
+    if (!sessionToken) {
+      return null;
+    }
+    const secret = env.CONSOLE_SESSION_SECRET?.trim() ?? "";
+    if (!secret) {
+      return {
+        ok: false,
+        response: errorResponse(500, "CONFIG_MISSING", "CONSOLE_SESSION_SECRET is required.")
+      };
+    }
+
+    let payload: ConsoleSessionPayload | null = null;
+    try {
+      payload = await verifyConsoleSessionToken(sessionToken, secret);
+    } catch {
+      payload = null;
+    }
+    if (!payload) {
+      return {
+        ok: false,
+        response: errorResponse(401, "UNAUTHORIZED", "Invalid or expired console session.")
+      };
+    }
+
+    if (payload.tid === null) {
+      if (!env.DB && payload.uid === DEMO_USER_ID) {
+        return {
+          ok: true,
+          auth: {
+            userId: DEMO_USER_ID,
+            isAdmin: true,
+            tokenId: null,
+            scopes: ["*"]
+          }
+        };
+      }
+      return {
+        ok: false,
+        response: errorResponse(401, "UNAUTHORIZED", "Console session is no longer valid.")
+      };
+    }
+
+    const store = resolveStore(env);
+    if (!store) {
+      return {
+        ok: false,
+        response: errorResponse(500, "STORE_NOT_CONFIGURED", "D1 binding DB is not configured.")
+      };
+    }
+
+    try {
+      const tokenRecord = await store.getAccessTokenById(payload.tid);
+      if (!tokenRecord || !tokenRecord.is_active || tokenRecord.user_id !== payload.uid) {
+        return {
+          ok: false,
+          response: errorResponse(401, "UNAUTHORIZED", "Console session is no longer valid.")
+        };
+      }
+      if (tokenRecord.expires_at && Date.parse(tokenRecord.expires_at) < Date.now()) {
+        return {
+          ok: false,
+          response: errorResponse(401, "TOKEN_EXPIRED", "Access token has expired.")
+        };
+      }
+      const user = await store.getUser(tokenRecord.user_id);
+      if (user && user.status !== "ACTIVE") {
+        return {
+          ok: false,
+          response: errorResponse(403, "USER_INACTIVE", "Current user is disabled or deleted.")
+        };
+      }
+
+      await store.touchAccessToken(tokenRecord.id, nowIso());
+
+      return {
+        ok: true,
+        auth: {
+          userId: tokenRecord.user_id,
+          isAdmin: hasTokenScope(tokenRecord.scopes, "admin:tokens"),
+          tokenId: tokenRecord.id,
+          scopes: tokenRecord.scopes
+        }
+      };
+    } catch {
+      return {
+        ok: false,
+        response: errorResponse(500, "AUTH_BACKEND_ERROR", "Failed to validate console session.")
+      };
+    }
+  }
+
+  async function requireUserId(request: Request, env: Env): Promise<AuthResult> {
+    const token = parseBearerToken(request.headers.get("authorization"));
+    if (token) {
+      return authenticateByAccessToken(token, env);
+    }
+
+    const sessionAuth = await authenticateByConsoleSession(request, env);
+    if (sessionAuth) {
+      return sessionAuth;
+    }
+
+    return {
+      ok: false,
+      response: errorResponse(401, "UNAUTHORIZED", "Missing bearer token or console session.")
+    };
+  }
+
   async function withStore<T>(
     env: Env,
     operation: (store: Store) => Promise<Response | T>,
@@ -1414,6 +1714,107 @@ export function createApp(options?: { store?: Store }) {
       return null;
     }
     return htmlResponse(buildConsoleHtml());
+  }
+
+  async function handleConsoleLogin(request: Request, env: Env): Promise<Response | null> {
+    const url = new URL(request.url);
+    if (request.method !== "POST" || url.pathname !== "/v1/console/login") {
+      return null;
+    }
+
+    const secret = env.CONSOLE_SESSION_SECRET?.trim() ?? "";
+    if (!secret) {
+      return errorResponse(500, "CONFIG_MISSING", "CONSOLE_SESSION_SECRET is required.");
+    }
+
+    let token = parseBearerToken(request.headers.get("authorization"));
+    if (!token) {
+      try {
+        const bodyText = await request.text();
+        if (bodyText.trim().length > 0) {
+          const parsed = JSON.parse(bodyText) as unknown;
+          if (isObjectBody(parsed) && typeof parsed.token === "string" && parsed.token.trim().length > 0) {
+            token = parsed.token.trim();
+          }
+        }
+      } catch {
+        return errorResponse(400, "BAD_REQUEST", "Invalid JSON body.");
+      }
+    }
+    if (!token) {
+      return errorResponse(400, "BAD_REQUEST", "Bearer token is required.");
+    }
+
+    const auth = await authenticateByAccessToken(token, env);
+    if (!auth.ok) {
+      return auth.response;
+    }
+
+    const session = await createConsoleSessionToken(auth.auth, secret);
+    const secure = url.protocol === "https:";
+    const responseBody: Record<string, unknown> = {
+      logged_in: true,
+      user_id: auth.auth.userId,
+      is_admin: auth.auth.isAdmin,
+      expires_at: session.expiresAt
+    };
+
+    const store = resolveStore(env);
+    if (store) {
+      const user = await store.ensureUser({
+        userId: auth.auth.userId,
+        role: authRole(auth.auth)
+      });
+      responseBody.user = user;
+    }
+
+    const response = jsonResponse(responseBody);
+    response.headers.append("set-cookie", buildSessionCookieValue(session.token, secure));
+    return response;
+  }
+
+  async function handleConsoleLogout(request: Request): Promise<Response | null> {
+    const url = new URL(request.url);
+    if (request.method !== "POST" || url.pathname !== "/v1/console/logout") {
+      return null;
+    }
+    const secure = url.protocol === "https:";
+    const response = jsonResponse({ logged_out: true });
+    response.headers.append("set-cookie", buildClearSessionCookieValue(secure));
+    return response;
+  }
+
+  async function handleConsoleSession(request: Request, env: Env): Promise<Response | null> {
+    const url = new URL(request.url);
+    if (request.method !== "GET" || url.pathname !== "/v1/console/session") {
+      return null;
+    }
+
+    const auth = await requireUserId(request, env);
+    if (!auth.ok) {
+      return auth.response;
+    }
+
+    const store = resolveStore(env);
+    if (!store) {
+      return jsonResponse({
+        user: {
+          id: auth.auth.userId,
+          role: authRole(auth.auth),
+          status: "ACTIVE"
+        },
+        is_admin: auth.auth.isAdmin
+      });
+    }
+
+    const user = await store.ensureUser({
+      userId: auth.auth.userId,
+      role: authRole(auth.auth)
+    });
+    return jsonResponse({
+      user,
+      is_admin: auth.auth.isAdmin
+    });
   }
 
   async function handleIngest(
@@ -2793,6 +3194,9 @@ export function createApp(options?: { store?: Store }) {
         () => handleHealthz(request),
         () => handleDocs(request),
         () => handleConsole(request),
+        () => handleConsoleLogin(request, env),
+        () => handleConsoleLogout(request),
+        () => handleConsoleSession(request, env),
         () => handleOpenApiSpec(request),
         () => handleIngest(request, env, ctx, logger),
         () => handleListItems(request, env),

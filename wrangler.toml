@@ -15,6 +15,7 @@ LOG_LEVEL = "info"
 # Secrets must be configured via Wrangler/Dashboard, not in wrangler.toml:
 # npx wrangler secret put NOTION_OAUTH_CLIENT_SECRET --name tonotionapi
 # npx wrangler secret put CREDENTIALS_ENCRYPTION_KEY --name tonotionapi
+# npx wrangler secret put CONSOLE_SESSION_SECRET --name tonotionapi
 
 [[d1_databases]]
 binding = "DB"

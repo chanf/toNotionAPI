@@ -5,6 +5,7 @@ import { InMemoryStore } from "../src/store";
 
 const DEV_ENV: Env = {
   WX2NOTION_DEV_TOKEN: "dev-token",
+  CONSOLE_SESSION_SECRET: "console-session-secret",
   NOTION_MOCK: "true",
   NOTION_API_VERSION: "2025-09-03",
   NOTION_API_BASE_URL: "https://api.notion.com/v1",
@@ -218,6 +219,74 @@ describe("workers backend api", () => {
       headers: { Authorization: "Bearer invalid-token" }
     });
     expect(response.status).toBe(401);
+  });
+
+  it("supports console session login and cookie-based auth", async () => {
+    const store = new InMemoryStore();
+    await store.ensureUser({ userId: "console-user", role: "USER" });
+    const issued = await store.issueAccessToken({
+      userId: "console-user",
+      label: "console-login",
+      scopes: ["items:read", "items:write"],
+      expiresAt: null
+    });
+    const app = createApp({ store });
+    const ctx = new TestContext();
+
+    const login = await send(app, ctx, "/v1/console/login", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${issued.plainToken}` }
+    });
+    expect(login.status).toBe(200);
+    const setCookie = login.headers.get("set-cookie") ?? "";
+    expect(setCookie).toContain("tonotion_console_session=");
+    const cookieHeader = setCookie.split(";")[0];
+    expect(cookieHeader).toContain("tonotion_console_session=");
+
+    const session = await send(app, ctx, "/v1/console/session", {
+      method: "GET",
+      headers: { cookie: cookieHeader }
+    });
+    expect(session.status).toBe(200);
+    const sessionPayload = await session.json() as { user: { id: string }; is_admin: boolean };
+    expect(sessionPayload.user.id).toBe("console-user");
+    expect(sessionPayload.is_admin).toBe(false);
+
+    const me = await send(app, ctx, "/v1/me", {
+      method: "GET",
+      headers: { cookie: cookieHeader }
+    });
+    expect(me.status).toBe(200);
+
+    const logout = await send(app, ctx, "/v1/console/logout", {
+      method: "POST",
+      headers: { cookie: cookieHeader }
+    });
+    expect(logout.status).toBe(200);
+    expect(logout.headers.get("set-cookie") ?? "").toContain("Max-Age=0");
+  });
+
+  it("returns CONFIG_MISSING when console session secret is absent", async () => {
+    const app = createApp({ store: new InMemoryStore() });
+    const ctx = new TestContext();
+    const envWithoutSessionSecret: Env = {
+      ...DEV_ENV,
+      CONSOLE_SESSION_SECRET: undefined
+    };
+
+    const response = await send(
+      app,
+      ctx,
+      "/v1/console/login",
+      {
+        method: "POST",
+        headers: AUTH_HEADER
+      },
+      envWithoutSessionSecret
+    );
+    expect(response.status).toBe(500);
+    const payload = await response.json() as { error: { code: string } };
+    expect(payload.error.code).toBe("CONFIG_MISSING");
   });
 
   it("supports page target settings with page_id", async () => {
