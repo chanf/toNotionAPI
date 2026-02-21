@@ -119,6 +119,12 @@ paths:
         - bearerAuth: []
       parameters:
         - $ref: '#/components/parameters/ItemId'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RetryRequest'
       responses:
         '202':
           description: Retry accepted
@@ -816,13 +822,22 @@ components:
 
     IngestRequest:
       type: object
-      required: [client_item_id, source_url]
+      required: [client_item_id, source_url, notion_api_token]
       properties:
         client_item_id:
           type: string
         source_url:
           type: string
           format: uri
+        notion_api_token:
+          type: string
+          description: Notion integration token. Required when submitting ingest task in non-mock mode.
+        notion_api_version:
+          type: string
+          nullable: true
+        notion_api_base_url:
+          type: string
+          nullable: true
         raw_text:
           type: string
           nullable: true
@@ -869,6 +884,20 @@ components:
         status:
           type: string
           enum: [RECEIVED]
+
+    RetryRequest:
+      type: object
+      required: [notion_api_token]
+      properties:
+        notion_api_token:
+          type: string
+          description: Notion integration token. Required when retrying sync in non-mock mode.
+        notion_api_version:
+          type: string
+          nullable: true
+        notion_api_base_url:
+          type: string
+          nullable: true
 
     AuthStartResponse:
       type: object

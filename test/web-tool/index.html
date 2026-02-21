@@ -118,7 +118,14 @@
             type="url"
             required
             placeholder="https://mp.weixin.qq.com/s/..."
-            value="https://mp.weixin.qq.com/s/BR7smBzxDaLcH8j8M6oJ9A"
+          />
+          <label for="notionToken">Notion API Token</label>
+          <input
+            id="notionToken"
+            type="password"
+            required
+            placeholder="secret_xxx（每次提交携带）"
+            autocomplete="off"
           />
           <button id="submitBtn" type="submit">提交到 Notion</button>
         </form>
@@ -137,6 +144,7 @@
     <script>
       const form = document.getElementById("submitForm");
       const sourceUrlInput = document.getElementById("sourceUrl");
+      const notionTokenInput = document.getElementById("notionToken");
       const submitBtn = document.getElementById("submitBtn");
       const statusText = document.getElementById("statusText");
       const resultText = document.getElementById("resultText");
@@ -164,7 +172,7 @@
           const response = await fetch("/api/config", { method: "GET" });
           const payload = await response.json();
           configText.textContent =
-            `目标服务：${payload.base_url} | Token 已配置：${payload.has_token ? "是" : "否"} | 轮询：${payload.poll_interval_ms}ms / 超时：${payload.poll_timeout_ms}ms`;
+            `目标服务：${payload.base_url} | API Token：${payload.has_token ? "已配置" : "未配置"} | Notion Token：按提交输入 | 轮询：${payload.poll_interval_ms}ms / 超时：${payload.poll_timeout_ms}ms`;
           if (!payload.has_token) {
             setStatus("服务端未配置 WEB_TOOL_API_TOKEN，无法提交。", "error");
           }
@@ -181,6 +189,11 @@
           setStatus("请先输入公众号 URL。", "error");
           return;
         }
+        const notionApiToken = notionTokenInput.value.trim();
+        if (!notionApiToken) {
+          setStatus("请先输入 Notion API Token。", "error");
+          return;
+        }
 
         submitBtn.disabled = true;
         setStatus("已提交，正在等待同步结果...", "");
@@ -190,7 +203,7 @@
           const response = await fetch("/api/submit", {
             method: "POST",
             headers: { "content-type": "application/json" },
-            body: JSON.stringify({ source_url: sourceUrl })
+            body: JSON.stringify({ source_url: sourceUrl, notion_api_token: notionApiToken })
           });
           const payload = await response.json();
           renderResult(payload);

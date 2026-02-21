@@ -226,7 +226,7 @@ async function syncToNotion(input: {
   if (!runtime.apiToken) {
     throw new NotionSyncError(
       "NOTION_TOKEN_MISSING",
-      "NOTION_API_TOKEN is required when NOTION_MOCK is disabled.",
+      "notion_api_token is required when NOTION_MOCK is disabled.",
       false
     );
   }

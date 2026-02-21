@@ -111,4 +111,7 @@ export interface IngestRequest {
   raw_text?: string;
   source_app?: string;
   source_type?: "wechat_mp";
+  notion_api_token?: string;
+  notion_api_version?: string;
+  notion_api_base_url?: string;
 }

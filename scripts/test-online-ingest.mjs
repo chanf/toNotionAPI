@@ -10,6 +10,7 @@ function usage() {
 Optional flags:
   --base-url <url>         API base URL (default: ${DEFAULT_BASE_URL})
   --token <token>          Bearer token (fallback: API_TOKEN env)
+  --notion-token <token>   Notion API token (required)
   --source-url <url>       WeChat article URL (default: ${DEFAULT_SOURCE_URL})
   --client-item-id <id>    Custom client item id
   --timeout-sec <n>        Poll timeout in seconds (default: ${DEFAULT_POLL_TIMEOUT_SEC})
@@ -23,6 +24,7 @@ function parseArgs(argv) {
   const parsed = {
     baseUrl: null,
     token: null,
+    notionToken: null,
     sourceUrl: null,
     clientItemId: null,
     timeoutSec: DEFAULT_POLL_TIMEOUT_SEC,
@@ -53,6 +55,11 @@ function parseArgs(argv) {
     }
     if (arg === "--source-url") {
       parsed.sourceUrl = argv[i + 1] ?? null;
+      i += 1;
+      continue;
+    }
+    if (arg === "--notion-token") {
+      parsed.notionToken = argv[i + 1] ?? null;
       i += 1;
       continue;
     }
@@ -114,6 +121,12 @@ async function main() {
     usage();
     process.exit(1);
   }
+  const notionToken = (args.notionToken ?? "").trim();
+  if (!notionToken) {
+    console.error("Missing notion token. Use --notion-token <token>.");
+    usage();
+    process.exit(1);
+  }
 
   const baseUrl = trimTrailingSlash(
     (args.baseUrl ?? process.env.API_BASE_URL ?? DEFAULT_BASE_URL).trim()
@@ -132,7 +145,8 @@ async function main() {
   const ingestPayload = {
     client_item_id: clientItemId,
     source_url: sourceUrl,
-    raw_text: sourceUrl
+    raw_text: sourceUrl,
+    notion_api_token: notionToken
   };
 
   console.log(`[submit] POST ${ingestUrl}`);

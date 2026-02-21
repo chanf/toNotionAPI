@@ -56,7 +56,6 @@ npm run d1:migrate:remote
 3. 配置关键 Secret（Worker 名称按你的实际项目替换）：
 
 ```bash
-npx wrangler secret put NOTION_API_TOKEN --name tonotionapi
 npx wrangler secret put CREDENTIALS_ENCRYPTION_KEY --name tonotionapi
 ```
 
@@ -78,8 +77,8 @@ https://tonotion.iiioiii.xin/console
 - 创建或登录普通用户
 - 创建用户 API Token（供客户端/测试工具调用）
 - 完成 Notion 授权标记（`/v1/auth/notion/start` + `/v1/auth/notion/callback`）
-- 设置用户 Notion 凭证与目标页面
-- 提交公众号 URL 验证链路
+- 设置目标页面
+- 在“同步测试工具”中提交公众号 URL + `notion_api_token` 验证链路
 
 ## 功能范围（当前）
 
@@ -228,7 +227,7 @@ curl "https://tonotion.iiioiii.xin/v1/me" \
 
 - `SUPER_ADMIN_TOKEN`：超级管理员 API Token，用于登录 `/console` 和调用管理员接口（`/v1/admin/*`）。
 - `API_TOKEN` / `WEB_TOOL_API_TOKEN`：业务调用 token（本质同一类 Access Token），用于调用 `/v1/ingest`、`/v1/items*` 等接口。
-- `NOTION_API_TOKEN`：Notion Integration Token，不是本系统鉴权 token，用于 Worker 调用 Notion API 写入内容。
+- `notion_api_token`：Notion Integration Token，请在每次调用 `/v1/ingest`（或 `/v1/items/{itemId}/retry`）时放在请求体中提交。
 
 获取 `API_TOKEN` 的推荐方式：
 
@@ -248,10 +247,9 @@ MVP 现支持两种模式：
 需要的环境变量：
 
 - `NOTION_MOCK`：`true/false`，默认 `false`（未设置时为 `false`，`wrangler.toml` 示例也为 `false`）。
-- `NOTION_API_TOKEN`：Notion Integration Token（真实模式下的全局兜底 token，建议用 `wrangler secret`）。
 - `NOTION_API_VERSION`：默认 `2022-06-28`。
 - `NOTION_API_BASE_URL`：默认 `https://api.notion.com/v1`。
-- `CREDENTIALS_ENCRYPTION_KEY`：用于加密存储用户级 `NOTION_API_TOKEN`（启用 `/v1/me/notion-credentials` 必填，建议配置为 secret）。
+- `CREDENTIALS_ENCRYPTION_KEY`：仅在使用 `/v1/me/notion-credentials` 保存凭证时需要，非每次提交模式的必需项。
 - `LOG_LEVEL`：日志级别，支持 `debug/info/warn/error`，默认 `info`。
 
 ### CREDENTIALS_ENCRYPTION_KEY 如何配置
@@ -296,21 +294,33 @@ curl "https://tonotion.iiioiii.xin/v1/auth/notion/callback?code=demo&state=<STAT
 - 该回调是当前 MVP 简化实现，仅用于设置授权状态。
 - 后续若切换完整 OAuth，会改为真实 token 交换流程。
 
-本地真实联调示例：
+本地真实联调示例（每次提交携带 `notion_api_token`）：
 
 ```bash
-npx wrangler secret put NOTION_API_TOKEN
 # 根据调试目标在 wrangler.toml 或 Dashboard 中设置 NOTION_MOCK:
 # - true: 仅模拟，不写入 Notion
 # - false: 真实写入 Notion
 npm run dev
 ```
 
+示例：提交 ingest（真实模式）
+
+```bash
+curl -X POST "https://tonotion.iiioiii.xin/v1/ingest" \
+  -H "Authorization: Bearer <API_TOKEN>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "client_item_id": "manual-001",
+    "source_url": "https://mp.weixin.qq.com/s/BR7smBzxDaLcH8j8M6oJ9A",
+    "notion_api_token": "<NOTION_API_TOKEN>"
+  }'
+```
+
 注意：
 
 - `/v1/auth/notion/callback` 目前仍是 MVP 简化实现（仅标记 `notion_connected=true`），不含完整 OAuth token 交换/刷新。
-- 同步时优先使用用户级凭证（`/v1/me/notion-credentials`），若未配置则回退到全局 `NOTION_API_TOKEN`。
-- 真实写入依赖 `NOTION_API_TOKEN` 具备目标页面写入权限，并且该页面已共享给 integration。
+- 真实写入时，请在每次 `POST /v1/ingest` 请求体中提供 `notion_api_token`。
+- `POST /v1/items/{itemId}/retry` 在真实模式下也需要在请求体里提供 `notion_api_token`。
 - 当前仅支持“Page 目标”模式（不再使用 database 目标模式）。
 - 推荐使用 `PUT /v1/me/notion-target` 设置 `page_id`；`PUT /v1/settings/notion-target` 为兼容保留接口。
 
@@ -343,7 +353,7 @@ curl -X PUT "https://tonotion.iiioiii.xin/v1/settings/notion-target" \
 常见同步错误码：
 
 - `NOTION_NOT_CONNECTED`：当前用户尚未完成 Notion 授权标记。
-- `NOTION_TOKEN_MISSING`：关闭 mock 但未配置 `NOTION_API_TOKEN`。
+- `NOTION_TOKEN_MISSING`：关闭 mock 但请求体中缺少 `notion_api_token`。
 - `NOTION_TARGET_MISSING`：未设置 Notion 目标页面 ID（`page_id`）。
 - `NOTION_AUTH_FAILED`：token 无效或无权限（401/403）。
 - `NOTION_TARGET_NOT_FOUND`：目标页面不存在或未共享（404）。
@@ -449,10 +459,11 @@ http://127.0.0.1:4173
 
 - `/console` 已内置“同步测试工具”（提交 URL + 自动轮询），优先推荐在后台直接测试。
 - 该工具在 `test/web-tool` 下，是独立的本地页面与本地代理服务。
-- 页面只需要输入公众号 URL，点击提交后会调用 `/v1/ingest` 并轮询到最终状态。
+- 页面输入“公众号 URL + notion_api_token”，本地服务会将两者一起提交到 `/v1/ingest` 并轮询到最终状态。
 - 默认端口为 `4173`，可通过 `WEB_TOOL_PORT` 覆盖。
 - 若未设置 `WEB_TOOL_API_BASE_URL`，默认使用 `https://tonotion.iiioiii.xin`。
 - `WEB_TOOL_API_TOKEN` 就是普通的 `API_TOKEN`，可在 `/console` 的“我的 Token”中创建。
+- `notion_api_token` 由用户每次提交时输入，不走服务端固定环境变量。
 
 ## 管理后台（/console）
 
@@ -464,7 +475,7 @@ http://127.0.0.1:4173
   - 查看 `/v1/me` 资料
   - 管理自己的 `/v1/me/tokens*`
   - 管理自己的 `/v1/me/notion-credentials` 与 `/v1/me/notion-target`
-  - 使用“同步测试工具”提交公众号 URL，并轮询 `/v1/items/{itemId}` 查看最终状态
+  - 使用“同步测试工具”提交公众号 URL + `notion_api_token`，并轮询 `/v1/items/{itemId}` 查看最终状态
 - 超管额外能力：
   - 管理 `/v1/admin/users*`（创建/查询/更新/删除用户）
   - 管理指定用户的 `/v1/admin/users/{userId}/tokens*`
@@ -482,7 +493,9 @@ http://127.0.0.1:4173
 ```bash
 API_TOKEN="<API_TOKEN>" \
 API_BASE_URL="https://tonotion.iiioiii.xin" \
-npm run ingest:online -- --source-url "https://mp.weixin.qq.com/s/BR7smBzxDaLcH8j8M6oJ9A"
+npm run ingest:online -- \
+  --source-url "https://mp.weixin.qq.com/s/BR7smBzxDaLcH8j8M6oJ9A" \
+  --notion-token "<NOTION_API_TOKEN>"
 ```
 
 ## Cloudflare 部署（Workers + D1）
@@ -527,10 +540,9 @@ npm run d1:migrate:remote
 - `NOTION_API_VERSION`：默认 `2022-06-28`
 - `NOTION_API_BASE_URL`：默认 `https://api.notion.com/v1`
 
-真实写入 Notion 时，配置 Secret：
+如需使用 `/v1/me/notion-credentials` 保存用户凭证，配置 Secret：
 
 ```bash
-npx wrangler secret put NOTION_API_TOKEN
 npx wrangler secret put CREDENTIALS_ENCRYPTION_KEY
 ```
 
@@ -625,8 +637,9 @@ npx wrangler tail tonotionapi
 1. 查询条目最终状态：`GET /v1/items/{itemId}`。
 2. 若 `status=SYNC_FAILED`，优先看 `error.code`（如 `NOTION_TOKEN_MISSING`、`NOTION_TARGET_MISSING`、`NOTION_AUTH_FAILED`、`NOTION_TARGET_NOT_FOUND`）。
 3. 确认目标父页面已共享给对应 Notion integration。
-4. 若用用户级凭证，确认已配置 `CREDENTIALS_ENCRYPTION_KEY` 且该用户执行过 `PUT /v1/me/notion-credentials`。
-5. 查看实时日志进一步定位：
+4. 确认提交 `/v1/ingest` 时请求体包含有效 `notion_api_token`。
+5. 若使用“保存凭证”模式，确认已配置 `CREDENTIALS_ENCRYPTION_KEY` 且该用户执行过 `PUT /v1/me/notion-credentials`。
+6. 查看实时日志进一步定位：
    ```bash
    npx wrangler tail tonotionapi
    ```

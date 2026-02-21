@@ -531,14 +531,13 @@ describe("workers backend api", () => {
     expect(setTarget.status).toBe(200);
   });
 
-  it("prefers user notion credential over global token for real sync", async () => {
+  it("uses notion_api_token from ingest request in real mode", async () => {
     const store = new InMemoryStore();
     const app = createApp({ store });
     const ctx = new TestContext();
     const env: Env = {
       WX2NOTION_DEV_TOKEN: "dev-token",
       NOTION_MOCK: "false",
-      NOTION_API_TOKEN: "ntn_global_fallback_token",
       NOTION_API_VERSION: "2022-06-28",
       NOTION_API_BASE_URL: "https://api.notion.com/v1",
       CREDENTIALS_ENCRYPTION_KEY: "test-encryption-key",
@@ -606,9 +605,10 @@ describe("workers backend api", () => {
         "/v1/ingest",
         "POST",
         {
-          client_item_id: "real-user-credential-1",
-          source_url: "https://mp.weixin.qq.com/s/user-credential",
-          raw_text: "user credential test content"
+          client_item_id: "real-request-token-1",
+          source_url: "https://mp.weixin.qq.com/s/request-token",
+          raw_text: "request token test content",
+          notion_api_token: "ntn_request_token_123456"
         },
         true,
         env
@@ -622,8 +622,7 @@ describe("workers backend api", () => {
       vi.unstubAllGlobals();
     }
 
-    expect(calledAuthHeaders.some((header) => header === "Bearer ntn_user_token_123456")).toBe(true);
-    expect(calledAuthHeaders.some((header) => header === "Bearer ntn_global_fallback_token")).toBe(false);
+    expect(calledAuthHeaders.some((header) => header === "Bearer ntn_request_token_123456")).toBe(true);
 
     const auditLogs = await store.listAuditLogs({ limit: 50 });
     expect(auditLogs.some((entry) => entry.action === "NOTION_CREDENTIAL_UPSERT")).toBe(true);
@@ -1048,12 +1047,49 @@ describe("workers backend api", () => {
       true,
       realModeEnv
     );
-    expect(ingest.status).toBe(202);
+    expect(ingest.status).toBe(400);
+    const payload = await ingest.json() as { error: { code: string } };
+    expect(payload.error.code).toBe("BAD_REQUEST");
+  });
 
-    const itemId = (await ingest.json() as { item_id: string }).item_id;
-    const failed = await waitForStatus(app, ctx, itemId, "SYNC_FAILED", realModeEnv);
-    const failedError = failed.error as { code: string };
-    expect(failedError.code).toBe("NOTION_TOKEN_MISSING");
+  it("requires notion_api_token when retrying in real mode", async () => {
+    const app = createApp({ store: new InMemoryStore() });
+    const ctx = new TestContext();
+    const realModeEnv: Env = {
+      WX2NOTION_DEV_TOKEN: "dev-token",
+      NOTION_MOCK: "false",
+      LOG_LEVEL: "error"
+    };
+
+    const retryWithoutToken = await send(
+      app,
+      ctx,
+      "/v1/items/non-existing/retry",
+      {
+        method: "POST",
+        headers: AUTH_HEADER
+      },
+      realModeEnv
+    );
+    expect(retryWithoutToken.status).toBe(400);
+
+    const retryWithToken = await send(
+      app,
+      ctx,
+      "/v1/items/non-existing/retry",
+      {
+        method: "POST",
+        headers: {
+          ...AUTH_HEADER,
+          "content-type": "application/json"
+        },
+        body: JSON.stringify({
+          notion_api_token: "ntn_retry_token_123456"
+        })
+      },
+      realModeEnv
+    );
+    expect(retryWithToken.status).toBe(404);
   });
 
   it("deduplicates by normalized url", async () => {

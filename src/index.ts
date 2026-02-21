@@ -9,7 +9,6 @@ import { errorResponse, jsonResponse, nowIso, parseBearerToken, randomId, sha256
 
 export interface Env {
   WX2NOTION_DEV_TOKEN?: string;
-  NOTION_API_TOKEN?: string;
   NOTION_API_VERSION?: string;
   NOTION_API_BASE_URL?: string;
   CREDENTIALS_ENCRYPTION_KEY?: string;
@@ -104,28 +103,6 @@ function bytesToBase64(bytes: Uint8Array): string {
   return btoa(binary);
 }
 
-function base64ToBytes(input: string): Uint8Array {
-  const maybeBuffer = (globalThis as unknown as {
-    Buffer?: { from(data: string, encoding: string): Uint8Array };
-  }).Buffer;
-  if (maybeBuffer) {
-    return new Uint8Array(maybeBuffer.from(input, "base64"));
-  }
-  const binary = atob(input);
-  const bytes = new Uint8Array(binary.length);
-  for (let index = 0; index < binary.length; index += 1) {
-    bytes[index] = binary.charCodeAt(index);
-  }
-  return bytes;
-}
-
-function concatBytes(left: Uint8Array, right: Uint8Array): Uint8Array {
-  const merged = new Uint8Array(left.length + right.length);
-  merged.set(left, 0);
-  merged.set(right, left.length);
-  return merged;
-}
-
 async function encryptSecret(plain: string, rawKey: string): Promise<{
   tokenCiphertext: string;
   tokenIv: string;
@@ -164,38 +141,6 @@ async function encryptSecret(plain: string, rawKey: string): Promise<{
   };
 }
 
-async function decryptSecret(input: {
-  tokenCiphertext: string;
-  tokenIv: string;
-  tokenTag: string;
-}, rawKey: string): Promise<string> {
-  if (!globalThis.crypto?.subtle) {
-    throw new Error("WebCrypto API is unavailable.");
-  }
-  const encodedKey = new TextEncoder().encode(rawKey);
-  const keyDigest = await globalThis.crypto.subtle.digest("SHA-256", encodedKey);
-  const cryptoKey = await globalThis.crypto.subtle.importKey(
-    "raw",
-    keyDigest,
-    { name: "AES-GCM" },
-    false,
-    ["decrypt"]
-  );
-  const iv = base64ToBytes(input.tokenIv);
-  const cipherBytes = base64ToBytes(input.tokenCiphertext);
-  const tagBytes = base64ToBytes(input.tokenTag);
-  const encrypted = concatBytes(cipherBytes, tagBytes);
-  const plainBuffer = await globalThis.crypto.subtle.decrypt(
-    {
-      name: "AES-GCM",
-      iv: iv as unknown as BufferSource
-    },
-    cryptoKey,
-    encrypted as BufferSource
-  );
-  return new TextDecoder().decode(new Uint8Array(plainBuffer));
-}
-
 function parseEnvBoolean(raw: string | undefined): boolean {
   if (!raw) {
     return false;
@@ -207,9 +152,33 @@ function parseEnvBoolean(raw: string | undefined): boolean {
 function resolveNotionRuntime(env: Env): NotionRuntimeInput {
   return {
     mock: parseEnvBoolean(env.NOTION_MOCK),
-    apiToken: env.NOTION_API_TOKEN ?? null,
+    apiToken: null,
     apiVersion: env.NOTION_API_VERSION ?? null,
     apiBaseUrl: env.NOTION_API_BASE_URL ?? null
+  };
+}
+
+function resolveNotionRuntimeFromRequest(
+  env: Env,
+  payload: Partial<Pick<IngestRequest, "notion_api_token" | "notion_api_version" | "notion_api_base_url">>
+): NotionRuntimeInput {
+  const fallback = resolveNotionRuntime(env);
+  const apiToken =
+    typeof payload.notion_api_token === "string" && payload.notion_api_token.trim().length > 0
+      ? payload.notion_api_token.trim()
+      : null;
+  const apiVersion =
+    typeof payload.notion_api_version === "string" && payload.notion_api_version.trim().length > 0
+      ? payload.notion_api_version.trim()
+      : fallback.apiVersion;
+  const apiBaseUrl = normalizeApiBaseUrl(
+    typeof payload.notion_api_base_url === "string" ? payload.notion_api_base_url : fallback.apiBaseUrl
+  );
+  return {
+    mock: fallback.mock,
+    apiToken,
+    apiVersion,
+    apiBaseUrl
   };
 }
 
@@ -484,13 +453,21 @@ function buildConsoleHtml(): string {
 
         <div class="card">
           <h2>同步测试工具</h2>
-          <div class="status">输入公众号 URL，直接调用 /v1/ingest 并在页面内轮询最终状态。</div>
+          <div class="status">输入公众号 URL + notion_api_token，调用 /v1/ingest 并在页面内轮询最终状态。</div>
           <div class="row">
             <input
               id="ingestSourceUrlInput"
               style="flex:1; min-width:280px;"
               placeholder="https://mp.weixin.qq.com/s/..."
-              value="https://mp.weixin.qq.com/s/BR7smBzxDaLcH8j8M6oJ9A"
+              value=""
+            />
+          </div>
+          <div class="row">
+            <input
+              id="ingestNotionTokenInput"
+              type="password"
+              style="flex:1; min-width:280px;"
+              placeholder="notion_api_token（每次提交必填，mock 模式除外）"
             />
           </div>
           <div class="row">
@@ -743,11 +720,16 @@ function buildConsoleHtml(): string {
 
       async function submitAndPollIngest() {
         const sourceUrl = (document.getElementById("ingestSourceUrlInput").value || "").trim();
+        const notionApiToken = (document.getElementById("ingestNotionTokenInput").value || "").trim();
         const clientItemIdInput = (document.getElementById("ingestClientItemIdInput").value || "").trim();
         const timeoutSec = parsePositiveInt((document.getElementById("ingestPollTimeoutInput").value || "").trim(), 60);
 
         if (!sourceUrl) {
           setIngestStatus("请先输入公众号 URL");
+          return;
+        }
+        if (!notionApiToken) {
+          setIngestStatus("请先输入 notion_api_token");
           return;
         }
 
@@ -763,7 +745,8 @@ function buildConsoleHtml(): string {
             body: JSON.stringify({
               client_item_id: clientItemId,
               source_url: sourceUrl,
-              raw_text: sourceUrl
+              raw_text: sourceUrl,
+              notion_api_token: notionApiToken
             })
           });
         } catch (error) {
@@ -1119,43 +1102,6 @@ export function createApp(options?: { store?: Store }) {
     });
   }
 
-  async function resolveNotionRuntimeForUser(
-    store: Store,
-    env: Env,
-    userId: string
-  ): Promise<NotionRuntimeInput> {
-    const fallbackRuntime = resolveNotionRuntime(env);
-    const credential = await store.getUserNotionCredentialSecret(userId);
-    if (!credential) {
-      return fallbackRuntime;
-    }
-    const rawKey = env.CREDENTIALS_ENCRYPTION_KEY?.trim() ?? "";
-    if (!rawKey) {
-      return fallbackRuntime;
-    }
-    try {
-      const apiToken = (await decryptSecret(
-        {
-          tokenCiphertext: credential.token_ciphertext,
-          tokenIv: credential.token_iv,
-          tokenTag: credential.token_tag
-        },
-        rawKey
-      )).trim();
-      if (!apiToken) {
-        return fallbackRuntime;
-      }
-      return {
-        ...fallbackRuntime,
-        apiToken,
-        apiVersion: credential.api_version || fallbackRuntime.apiVersion,
-        apiBaseUrl: credential.api_base_url || fallbackRuntime.apiBaseUrl
-      };
-    } catch {
-      return fallbackRuntime;
-    }
-  }
-
   async function requireUserId(request: Request, env: Env): Promise<AuthResult> {
     const token = parseBearerToken(request.headers.get("authorization"));
     if (!token) {
@@ -1311,9 +1257,12 @@ export function createApp(options?: { store?: Store }) {
     }
     const clientItemId = payload.client_item_id;
     const sourceUrl = payload.source_url;
+    const notionRuntime = resolveNotionRuntimeFromRequest(env, payload);
+    if (!notionRuntime.mock && !notionRuntime.apiToken) {
+      return errorResponse(400, "BAD_REQUEST", "notion_api_token is required when NOTION_MOCK is disabled.");
+    }
 
     return withStore(env, async (store) => {
-      const notionRuntime = await resolveNotionRuntimeForUser(store, env, auth.auth.userId);
       const result = await store.ingestItem({
         userId: auth.auth.userId,
         clientItemId,
@@ -1437,10 +1386,27 @@ export function createApp(options?: { store?: Store }) {
       return auth.response;
     }
 
+    let body: unknown = {};
+    try {
+      const raw = await request.text();
+      if (raw.trim().length > 0) {
+        body = JSON.parse(raw);
+      }
+    } catch {
+      return errorResponse(400, "BAD_REQUEST", "Invalid JSON body.");
+    }
+    if (!isObjectBody(body)) {
+      return errorResponse(400, "BAD_REQUEST", "Invalid request body.");
+    }
+
     const itemId = match[1];
+    const payload = body as Partial<IngestRequest>;
+    const notionRuntime = resolveNotionRuntimeFromRequest(env, payload);
+    if (!notionRuntime.mock && !notionRuntime.apiToken) {
+      return errorResponse(400, "BAD_REQUEST", "notion_api_token is required when NOTION_MOCK is disabled.");
+    }
 
     return withStore(env, async (store) => {
-      const notionRuntime = await resolveNotionRuntimeForUser(store, env, auth.auth.userId);
       const existing = await store.getItem({ userId: auth.auth.userId, itemId });
       if (!existing) {
         return errorResponse(404, "NOT_FOUND", "Item not found.");

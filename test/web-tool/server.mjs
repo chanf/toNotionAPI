@@ -104,16 +104,20 @@ function parseRequestBody(req) {
   });
 }
 
-async function submitToNotion(sourceUrl) {
+async function submitToNotion(sourceUrl, notionApiToken) {
   if (!API_TOKEN) {
     throw new Error("WEB_TOOL_API_TOKEN is required.");
+  }
+  if (!notionApiToken) {
+    throw new Error("notion_api_token is required.");
   }
 
   const clientItemId = `web-tool-${Date.now()}-${randomUUID().slice(0, 8)}`;
   const ingestPayload = {
     client_item_id: clientItemId,
     source_url: sourceUrl,
-    raw_text: sourceUrl
+    raw_text: sourceUrl,
+    notion_api_token: notionApiToken
   };
 
   const ingestUrl = `${DEFAULT_BASE_URL}/v1/ingest`;
@@ -221,13 +225,21 @@ const server = createServer(async (req, res) => {
         body && typeof body === "object" && typeof body.source_url === "string"
           ? body.source_url.trim()
           : "";
+      const notionApiToken =
+        body && typeof body === "object" && typeof body.notion_api_token === "string"
+          ? body.notion_api_token.trim()
+          : "";
 
       if (!sourceUrl) {
         sendJson(res, 400, { error: "source_url is required." });
         return;
       }
+      if (!notionApiToken) {
+        sendJson(res, 400, { error: "notion_api_token is required." });
+        return;
+      }
 
-      const result = await submitToNotion(sourceUrl);
+      const result = await submitToNotion(sourceUrl, notionApiToken);
       const finalStatus = result.final?.item?.status ?? null;
       sendJson(res, 200, {
         ok: finalStatus === "SYNCED",
@@ -249,4 +261,5 @@ server.listen(PORT, "127.0.0.1", () => {
   console.log(`[web-tool] running at http://127.0.0.1:${PORT}`);
   console.log(`[web-tool] API base URL: ${DEFAULT_BASE_URL}`);
   console.log(`[web-tool] API token configured: ${API_TOKEN ? "yes" : "no"}`);
+  console.log("[web-tool] Notion token mode: request body per submit");
 });
