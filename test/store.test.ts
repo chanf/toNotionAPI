@@ -18,7 +18,7 @@ describe("in-memory store", () => {
       tokenIv: "iv",
       tokenTag: "tag",
       tokenHint: "123456",
-      apiVersion: "2022-06-28",
+      apiVersion: "2025-09-03",
       apiBaseUrl: "https://api.notion.com/v1"
     });
 
@@ -93,7 +93,7 @@ describe("in-memory store", () => {
       tokenIv: "iv",
       tokenTag: "tag",
       tokenHint: "654321",
-      apiVersion: "2022-06-28",
+      apiVersion: "2025-09-03",
       apiBaseUrl: "https://api.notion.com/v1"
     });
     expect(upserted.user_id).toBe("u-credential");

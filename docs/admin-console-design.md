@@ -104,7 +104,7 @@
 - `token_iv TEXT NOT NULL`
 - `token_tag TEXT NOT NULL`
 - `token_hint TEXT`（仅显示后 4~6 位）
-- `api_version TEXT NOT NULL DEFAULT '2022-06-28'`
+- `api_version TEXT NOT NULL DEFAULT '2025-09-03'`
 - `api_base_url TEXT NOT NULL DEFAULT 'https://api.notion.com/v1'`
 - `created_at TEXT NOT NULL`
 - `updated_at TEXT NOT NULL`

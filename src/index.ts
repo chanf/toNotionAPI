@@ -253,7 +253,7 @@ function resolveNotionOAuthConfig(env: Env): NotionOAuthConfig | null {
     redirectUri,
     authorizeUrl: `${apiBaseUrl}/oauth/authorize`,
     tokenUrl: `${apiBaseUrl}/oauth/token`,
-    apiVersion: env.NOTION_API_VERSION?.trim() || "2022-06-28"
+    apiVersion: env.NOTION_API_VERSION?.trim() || "2025-09-03"
   };
 }
 
@@ -617,7 +617,7 @@ function buildConsoleHtml(): string {
             <input id="notionTokenInput" type="password" placeholder="NOTION_API_TOKEN" style="flex:1; min-width:220px;" />
           </div>
           <div class="row">
-            <input id="notionVersionInput" value="2022-06-28" placeholder="NOTION_API_VERSION" />
+            <input id="notionVersionInput" value="2025-09-03" placeholder="NOTION_API_VERSION" />
             <input id="notionBaseUrlInput" value="https://api.notion.com/v1" placeholder="NOTION_API_BASE_URL" style="flex:1; min-width:200px;" />
           </div>
           <div class="row">
@@ -1035,7 +1035,7 @@ function buildConsoleHtml(): string {
             headers: { "content-type": "application/json" },
             body: JSON.stringify({
               notion_api_token: notionApiToken,
-              notion_api_version: notionApiVersion || "2022-06-28",
+              notion_api_version: notionApiVersion || "2025-09-03",
               notion_api_base_url: notionApiBaseUrl || "https://api.notion.com/v1"
             })
           });
@@ -2320,7 +2320,7 @@ export function createApp(options?: { store?: Store }) {
     const apiVersion =
       typeof body.notion_api_version === "string" && body.notion_api_version.trim().length > 0
         ? body.notion_api_version.trim()
-        : (env.NOTION_API_VERSION ?? "2022-06-28");
+        : (env.NOTION_API_VERSION ?? "2025-09-03");
     const apiBaseUrl = normalizeApiBaseUrl(
       typeof body.notion_api_base_url === "string" ? body.notion_api_base_url : env.NOTION_API_BASE_URL
     );

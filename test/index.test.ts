@@ -6,7 +6,7 @@ import { InMemoryStore } from "../src/store";
 const DEV_ENV: Env = {
   WX2NOTION_DEV_TOKEN: "dev-token",
   NOTION_MOCK: "true",
-  NOTION_API_VERSION: "2022-06-28",
+  NOTION_API_VERSION: "2025-09-03",
   NOTION_API_BASE_URL: "https://api.notion.com/v1",
   NOTION_OAUTH_CLIENT_ID: "oauth_client_id_test",
   NOTION_OAUTH_CLIENT_SECRET: "oauth_client_secret_test",
@@ -530,7 +530,7 @@ describe("workers backend api", () => {
       "PUT",
       {
         notion_api_token: "ntn_test_token_123456",
-        notion_api_version: "2022-06-28",
+        notion_api_version: "2025-09-03",
         notion_api_base_url: "https://api.notion.com/v1"
       },
       true,
@@ -586,7 +586,7 @@ describe("workers backend api", () => {
       "PUT",
       {
         notion_api_token: "ntn_user_token_123456",
-        notion_api_version: "2022-06-28",
+        notion_api_version: "2025-09-03",
         notion_api_base_url: "https://api.notion.com/v1"
       },
       true,
@@ -813,7 +813,7 @@ describe("workers backend api", () => {
       "PUT",
       {
         notion_api_token: "ntn_no_refresh_token",
-        notion_api_version: "2022-06-28",
+        notion_api_version: "2025-09-03",
         notion_api_base_url: "https://api.notion.com/v1"
       },
       true,
@@ -989,7 +989,7 @@ describe("workers backend api", () => {
       "/v1/me/notion-credentials",
       "PUT",
       {
-        notion_api_version: "2022-06-28"
+        notion_api_version: "2025-09-03"
       },
       true,
       envWithKey

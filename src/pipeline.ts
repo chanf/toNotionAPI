@@ -5,7 +5,7 @@ import { ParserError, parseWeChatArticle, type ParsedArticle } from "./article-p
 import { nowIso, randomId } from "./utils";
 
 const DEFAULT_NOTION_API_BASE_URL = "https://api.notion.com/v1";
-const DEFAULT_NOTION_API_VERSION = "2022-06-28";
+const DEFAULT_NOTION_API_VERSION = "2025-09-03";
 const NOTION_TITLE_MAX_LENGTH = 200;
 const NOTION_MAX_CHILDREN_PER_REQUEST = 100;
 

@@ -56,6 +56,7 @@ npm run d1:migrate:remote
 3. 配置关键 Secret（Worker 名称按你的实际项目替换）：
 
 ```bash
+npx wrangler secret put NOTION_OAUTH_CLIENT_SECRET --name tonotionapi
 npx wrangler secret put CREDENTIALS_ENCRYPTION_KEY --name tonotionapi
 ```
 
@@ -248,7 +249,7 @@ MVP 现支持两种模式：
 需要的环境变量：
 
 - `NOTION_MOCK`：`true/false`，默认 `false`（未设置时为 `false`，`wrangler.toml` 示例也为 `false`）。
-- `NOTION_API_VERSION`：默认 `2022-06-28`。
+- `NOTION_API_VERSION`：默认 `2025-09-03`。
 - `NOTION_API_BASE_URL`：默认 `https://api.notion.com/v1`。
 - `NOTION_OAUTH_CLIENT_ID`：Notion OAuth 集成的 Client ID。
 - `NOTION_OAUTH_REDIRECT_URI`：Notion OAuth 回调地址（需与 Notion Integration 配置一致）。
@@ -324,15 +325,18 @@ curl -X POST "https://tonotion.iiioiii.xin/v1/ingest" \
 注意：
 
 - `/v1/auth/notion/callback` 已接入真实 token 交换，并加密保存 access/refresh token。
+- 当前同步主链路仍为“请求级 token”模式：不会自动读取 `/v1/me/notion-credentials` 里的凭证作为 ingest/retry 的默认 token。
 - 真实写入时，请在每次 `POST /v1/ingest` 请求体中提供 `notion_api_token`。
 - `POST /v1/items/{itemId}/retry` 在真实模式下也需要在请求体里提供 `notion_api_token`。
+- 默认 `NOTION_API_VERSION` 已升级为 `2025-09-03`。
+- Notion `2025-09-03` 的主要 breaking change 集中在数据库 API（`/v1/databases` 与 `/v1/data_sources` 拆分）；当前项目仅使用 page + block API，不依赖数据库写入接口。
 - 当前仅支持“Page 目标”模式（不再使用 database 目标模式）。
 - 推荐使用 `PUT /v1/me/notion-target` 设置 `page_id`；`PUT /v1/settings/notion-target` 为兼容保留接口。
 
 示例（推荐）：
 
 ```bash
-curl -X PUT "https://tonotion.iiioiii.xin/v1/settings/notion-target" \
+curl -X PUT "https://tonotion.iiioiii.xin/v1/me/notion-target" \
   -H "Authorization: Bearer <API_TOKEN>" \
   -H "Content-Type: application/json" \
   -d '{
@@ -542,7 +546,7 @@ npm run d1:migrate:remote
 `wrangler.toml` 中已有默认 `[vars]`，按环境调整：
 
 - `NOTION_MOCK`：生产建议设为 `"false"`
-- `NOTION_API_VERSION`：默认 `2022-06-28`
+- `NOTION_API_VERSION`：默认 `2025-09-03`
 - `NOTION_API_BASE_URL`：默认 `https://api.notion.com/v1`
 - `NOTION_OAUTH_CLIENT_ID`：Notion OAuth Client ID
 - `NOTION_OAUTH_REDIRECT_URI`：Notion OAuth 回调地址
@@ -646,7 +650,7 @@ npx wrangler tail tonotionapi
 2. 若 `status=SYNC_FAILED`，优先看 `error.code`（如 `NOTION_TOKEN_MISSING`、`NOTION_TARGET_MISSING`、`NOTION_AUTH_FAILED`、`NOTION_TARGET_NOT_FOUND`）。
 3. 确认目标父页面已共享给对应 Notion integration。
 4. 确认提交 `/v1/ingest` 时请求体包含有效 `notion_api_token`。
-5. 若使用“保存凭证”模式，确认已配置 `CREDENTIALS_ENCRYPTION_KEY` 且该用户执行过 `PUT /v1/me/notion-credentials`。
+5. 若要调试 OAuth/凭证管理接口（`/v1/auth/notion/*`、`/v1/me/notion-credentials`），确认已配置 `NOTION_OAUTH_CLIENT_SECRET` 与 `CREDENTIALS_ENCRYPTION_KEY`。
 6. 查看实时日志进一步定位：
    ```bash
    npx wrangler tail tonotionapi
