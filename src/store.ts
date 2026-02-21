@@ -340,7 +340,16 @@ export interface Store {
     targetId?: string | null;
     metadataJson?: string | null;
   }): Promise<void>;
-  listAuditLogs(input?: { limit?: number }): Promise<AuditLog[]>;
+  listAuditLogs(input?: {
+    limit?: number;
+    pageToken?: string | null;
+    actorUserId?: string | null;
+    action?: string | null;
+    targetType?: string | null;
+    targetId?: string | null;
+    createdFrom?: string | null;
+    createdTo?: string | null;
+  }): Promise<AuditLog[]>;
   issueAccessToken(input: {
     userId: string;
     label: string | null;
@@ -714,11 +723,34 @@ export class InMemoryStore implements Store {
     this.auditLogs.push(log);
   }
 
-  async listAuditLogs(input?: { limit?: number }): Promise<AuditLog[]> {
+  async listAuditLogs(input?: {
+    limit?: number;
+    pageToken?: string | null;
+    actorUserId?: string | null;
+    action?: string | null;
+    targetType?: string | null;
+    targetId?: string | null;
+    createdFrom?: string | null;
+    createdTo?: string | null;
+  }): Promise<AuditLog[]> {
     const limit = typeof input?.limit === "number" && input.limit > 0 ? Math.floor(input.limit) : 100;
+    let start = 0;
+    if (typeof input?.pageToken === "string" && input.pageToken.trim().length > 0) {
+      const parsed = Number.parseInt(input.pageToken, 10);
+      if (Number.isFinite(parsed) && parsed >= 0) {
+        start = parsed;
+      }
+    }
+
     return [...this.auditLogs]
+      .filter((log) => !input?.actorUserId || log.actor_user_id === input.actorUserId)
+      .filter((log) => !input?.action || log.action === input.action)
+      .filter((log) => !input?.targetType || log.target_type === input.targetType)
+      .filter((log) => !input?.targetId || log.target_id === input.targetId)
+      .filter((log) => !input?.createdFrom || Date.parse(log.created_at) >= Date.parse(input.createdFrom))
+      .filter((log) => !input?.createdTo || Date.parse(log.created_at) <= Date.parse(input.createdTo))
       .sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at))
-      .slice(0, limit)
+      .slice(start, start + limit)
       .map(clone);
   }
 
@@ -1114,7 +1146,7 @@ export class D1Store implements Store {
     await checkedRun(
       this.db,
       `INSERT INTO user_settings (
-        user_id, notion_connected, workspace_name, target_database_id, target_database_title, created_at, updated_at
+        user_id, notion_connected, workspace_name, target_page_id, target_page_title, created_at, updated_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(user_id) DO NOTHING`,
       [userId, 0, null, null, null, now, now]
@@ -1131,7 +1163,7 @@ export class D1Store implements Store {
     await checkedRun(
       this.db,
       `UPDATE user_settings
-       SET target_database_id = ?, target_database_title = ?, updated_at = ?
+       SET target_page_id = ?, target_page_title = ?, updated_at = ?
        WHERE user_id = ?`,
       [input.targetPageId, input.targetPageTitle, nowIso(), input.userId]
     );
@@ -1143,8 +1175,8 @@ export class D1Store implements Store {
     const row = await checkedFirst<SettingsRow>(
       this.db,
       `SELECT user_id, notion_connected, workspace_name,
-              target_database_id AS target_page_id,
-              target_database_title AS target_page_title
+              target_page_id,
+              target_page_title
        FROM user_settings WHERE user_id = ? LIMIT 1`,
       [userId]
     );
@@ -1333,15 +1365,61 @@ export class D1Store implements Store {
     );
   }
 
-  async listAuditLogs(input?: { limit?: number }): Promise<AuditLog[]> {
+  async listAuditLogs(input?: {
+    limit?: number;
+    pageToken?: string | null;
+    actorUserId?: string | null;
+    action?: string | null;
+    targetType?: string | null;
+    targetId?: string | null;
+    createdFrom?: string | null;
+    createdTo?: string | null;
+  }): Promise<AuditLog[]> {
     const limit = typeof input?.limit === "number" && input.limit > 0 ? Math.floor(input.limit) : 100;
+    let offset = 0;
+    if (typeof input?.pageToken === "string" && input.pageToken.trim().length > 0) {
+      const parsed = Number.parseInt(input.pageToken, 10);
+      if (Number.isFinite(parsed) && parsed >= 0) {
+        offset = parsed;
+      }
+    }
+    const conditions: string[] = [];
+    const params: unknown[] = [];
+    if (input?.actorUserId) {
+      conditions.push("actor_user_id = ?");
+      params.push(input.actorUserId);
+    }
+    if (input?.action) {
+      conditions.push("action = ?");
+      params.push(input.action);
+    }
+    if (input?.targetType) {
+      conditions.push("target_type = ?");
+      params.push(input.targetType);
+    }
+    if (input?.targetId) {
+      conditions.push("target_id = ?");
+      params.push(input.targetId);
+    }
+    if (input?.createdFrom) {
+      conditions.push("created_at >= ?");
+      params.push(input.createdFrom);
+    }
+    if (input?.createdTo) {
+      conditions.push("created_at <= ?");
+      params.push(input.createdTo);
+    }
+    const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+    params.push(limit, offset);
     const rows = await checkedAll<AuditLogRow>(
       this.db,
       `SELECT id, actor_user_id, actor_role, action, target_type, target_id, metadata_json, created_at
        FROM audit_logs
+       ${whereClause}
        ORDER BY created_at DESC
-       LIMIT ?`,
-      [limit]
+       LIMIT ?
+       OFFSET ?`,
+      params
     );
     return rows.map(rowToAuditLog);
   }

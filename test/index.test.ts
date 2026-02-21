@@ -566,6 +566,120 @@ describe("workers backend api", () => {
     expect(forbidden.status).toBe(403);
   });
 
+  it("supports audit log filtering and pagination", async () => {
+    const app = createApp({ store: new InMemoryStore() });
+    const ctx = new TestContext();
+
+    const createUserA = await sendJson(app, ctx, "/v1/admin/users", "POST", {
+      user_id: "audit-filter-a",
+      role: "USER"
+    });
+    expect(createUserA.status).toBe(201);
+
+    const createUserB = await sendJson(app, ctx, "/v1/admin/users", "POST", {
+      user_id: "audit-filter-b",
+      role: "USER"
+    });
+    expect(createUserB.status).toBe(201);
+
+    const firstPage = await send(
+      app,
+      ctx,
+      "/v1/admin/audit-logs?limit=1&action=USER_CREATE&actor_user_id=demo-user",
+      {
+        method: "GET",
+        headers: AUTH_HEADER
+      }
+    );
+    expect(firstPage.status).toBe(200);
+    const firstPayload = await firstPage.json() as {
+      logs: Array<{ action: string; actor_user_id: string | null }>;
+      next_page_token: string | null;
+    };
+    expect(firstPayload.logs.length).toBe(1);
+    expect(firstPayload.logs[0].action).toBe("USER_CREATE");
+    expect(firstPayload.logs[0].actor_user_id).toBe("demo-user");
+    expect(typeof firstPayload.next_page_token).toBe("string");
+
+    const nextToken = firstPayload.next_page_token as string;
+    const secondPage = await send(
+      app,
+      ctx,
+      `/v1/admin/audit-logs?limit=1&action=USER_CREATE&page_token=${encodeURIComponent(nextToken)}`,
+      {
+        method: "GET",
+        headers: AUTH_HEADER
+      }
+    );
+    expect(secondPage.status).toBe(200);
+    const secondPayload = await secondPage.json() as {
+      logs: Array<{ action: string }>;
+      next_page_token: string | null;
+    };
+    expect(secondPayload.logs.length).toBe(1);
+    expect(secondPayload.logs[0].action).toBe("USER_CREATE");
+
+    const filterByTarget = await send(
+      app,
+      ctx,
+      "/v1/admin/audit-logs?limit=20&action=USER_CREATE&target_id=audit-filter-a",
+      {
+        method: "GET",
+        headers: AUTH_HEADER
+      }
+    );
+    expect(filterByTarget.status).toBe(200);
+    const targetPayload = await filterByTarget.json() as {
+      logs: Array<{ action: string; target_id: string | null }>;
+    };
+    expect(targetPayload.logs.length).toBe(1);
+    expect(targetPayload.logs[0].action).toBe("USER_CREATE");
+    expect(targetPayload.logs[0].target_id).toBe("audit-filter-a");
+  });
+
+  it("supports audit log csv export and time range filters", async () => {
+    const app = createApp({ store: new InMemoryStore() });
+    const ctx = new TestContext();
+
+    const createUser = await sendJson(app, ctx, "/v1/admin/users", "POST", {
+      user_id: "audit-export-user",
+      role: "USER"
+    });
+    expect(createUser.status).toBe(201);
+
+    const csvResponse = await send(
+      app,
+      ctx,
+      "/v1/admin/audit-logs?limit=20&format=csv&action=USER_CREATE&from=2000-01-01T00:00:00.000Z&to=2100-01-01T00:00:00.000Z",
+      {
+        method: "GET",
+        headers: AUTH_HEADER
+      }
+    );
+    expect(csvResponse.status).toBe(200);
+    expect(csvResponse.headers.get("content-type") ?? "").toContain("text/csv");
+    const csvText = await csvResponse.text();
+    expect(csvText).toContain("id,actor_user_id,actor_role,action,target_type,target_id,metadata_json,created_at");
+    expect(csvText).toContain("USER_CREATE");
+
+    const noResultByTime = await send(
+      app,
+      ctx,
+      "/v1/admin/audit-logs?limit=20&from=2999-01-01T00:00:00.000Z&to=2999-12-31T23:59:59.999Z",
+      {
+        method: "GET",
+        headers: AUTH_HEADER
+      }
+    );
+    expect(noResultByTime.status).toBe(200);
+    const emptyPayload = await noResultByTime.json() as {
+      logs: Array<unknown>;
+      next_page_token: string | null;
+    };
+    expect(emptyPayload.logs.length).toBe(0);
+    expect(emptyPayload.next_page_token).toBe(null);
+  });
+
   it("supports /v1/me profile, token and notion settings endpoints", async () => {
     const app = createApp({ store: new InMemoryStore() });
     const ctx = new TestContext();
@@ -1223,6 +1337,41 @@ describe("workers backend api", () => {
       headers: AUTH_HEADER
     });
     expect(invalidLimit.status).toBe(400);
+
+    const invalidPageToken = await send(app, ctx, "/v1/admin/audit-logs?page_token=-1", {
+      method: "GET",
+      headers: AUTH_HEADER
+    });
+    expect(invalidPageToken.status).toBe(400);
+
+    const invalidFrom = await send(app, ctx, "/v1/admin/audit-logs?from=bad-time", {
+      method: "GET",
+      headers: AUTH_HEADER
+    });
+    expect(invalidFrom.status).toBe(400);
+
+    const invalidTo = await send(app, ctx, "/v1/admin/audit-logs?to=bad-time", {
+      method: "GET",
+      headers: AUTH_HEADER
+    });
+    expect(invalidTo.status).toBe(400);
+
+    const invalidFormat = await send(app, ctx, "/v1/admin/audit-logs?format=xml", {
+      method: "GET",
+      headers: AUTH_HEADER
+    });
+    expect(invalidFormat.status).toBe(400);
+
+    const invalidTimeRange = await send(
+      app,
+      ctx,
+      "/v1/admin/audit-logs?from=2026-02-21T12:00:00.000Z&to=2026-02-21T11:00:00.000Z",
+      {
+        method: "GET",
+        headers: AUTH_HEADER
+      }
+    );
+    expect(invalidTimeRange.status).toBe(400);
 
     const invalidExpiresAt = await sendJson(
       app,

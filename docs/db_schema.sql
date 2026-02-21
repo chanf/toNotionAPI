@@ -48,8 +48,8 @@ EXECUTE FUNCTION set_updated_at();
 CREATE TABLE user_settings (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id UUID NOT NULL REFERENCES app_users(id) ON DELETE CASCADE,
-  target_database_id TEXT,
-  target_database_title TEXT,
+  target_page_id TEXT,
+  target_page_title TEXT,
   content_mode TEXT NOT NULL DEFAULT 'LINK_AND_CONTENT'
     CHECK (content_mode IN ('LINK_ONLY', 'LINK_AND_CONTENT')),
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),

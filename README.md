@@ -119,7 +119,7 @@ https://tonotion.iiioiii.xin/console
 - `POST /v1/admin/tokens`（管理员：创建 token）
 - `GET /v1/admin/tokens`（管理员：查询 token）
 - `POST /v1/admin/tokens/{tokenId}/revoke`（管理员：吊销 token）
-- `GET /v1/admin/audit-logs`（管理员：查询审计日志）
+- `GET /v1/admin/audit-logs`（管理员：查询审计日志，支持筛选、时间范围与分页导出）
 
 说明：
 - 当前主线已接入 D1 持久化（通过 `DB` 绑定）。
@@ -171,6 +171,13 @@ npm run d1:migrate:local
 ```bash
 npm run d1:migrate:remote
 ```
+
+升级说明：
+
+- 本版本包含 `0006_rename_user_settings_target_columns.sql`，会将 `user_settings` 的
+  `target_database_id/target_database_title` 重命名为
+  `target_page_id/target_page_title`。
+- 若线上未执行到该迁移，可能出现列不存在错误；请先执行 `npm run d1:migrate:remote` 再部署新代码。
 
 ## API 访问 Token 初始化
 
@@ -431,7 +438,13 @@ curl -X POST "http://127.0.0.1:8787/v1/admin/users/<USER_ID>/tokens/<TOKEN_ID>/r
 
 示例：查看审计日志
 ```bash
-curl "http://127.0.0.1:8787/v1/admin/audit-logs?limit=50" \
+curl "http://127.0.0.1:8787/v1/admin/audit-logs?limit=50&from=2026-02-01T00:00:00.000Z&to=2026-02-28T23:59:59.999Z&action=USER_CREATE" \
+  -H "Authorization: Bearer <ADMIN_TOKEN>"
+```
+
+示例：导出审计日志 CSV
+```bash
+curl "http://127.0.0.1:8787/v1/admin/audit-logs?limit=500&format=csv" \
   -H "Authorization: Bearer <ADMIN_TOKEN>"
 ```
 
@@ -488,6 +501,9 @@ http://127.0.0.1:4173
 - 访问地址：`/console`（例如 `https://tonotion.iiioiii.xin/console`）
 - 登录方式：输入任意有效 API Token，通过 `/v1/console/login` 换取 HttpOnly 会话 Cookie（`/v1/console/logout` 清理）。
 - 控制台会显示会话剩余时间，并在临近过期时自动调用 `/v1/console/refresh` 续期。
+- 页面布局为“左侧菜单 + 右侧工作区”，默认进入“会话登录”分区。
+- 左侧菜单按功能分组：基础功能（会话登录/个人配置/同步测试）与超管功能（用户管理/用户 Token/审计日志）。
+- 超管功能菜单仅在 `is_admin=true` 时显示；普通用户不会看到或进入超管分区。
 - 普通用户能力：
   - 查看 `/v1/me` 资料
   - 管理自己的 `/v1/me/tokens*`
@@ -497,7 +513,7 @@ http://127.0.0.1:4173
 - 超管额外能力：
   - 管理 `/v1/admin/users*`（创建/查询/更新/删除用户）
   - 管理指定用户的 `/v1/admin/users/{userId}/tokens*`
-  - 查看 `/v1/admin/audit-logs`（审计日志）
+  - 查看 `/v1/admin/audit-logs`（审计日志，支持 `limit/page_token/actor_user_id/action/target_type/target_id/from/to/format`）
 
 注意：
 

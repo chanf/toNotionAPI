@@ -3,7 +3,7 @@ import { createLogger, serializeError, type Logger } from "./logger";
 import { OPENAPI_YAML } from "./openapi";
 import { processItem, type NotionRuntimeInput } from "./pipeline";
 import { D1Store, type Store } from "./store";
-import type { ApiAccessToken, AppUserRole, AppUserStatus, IngestRequest, ItemStatus } from "./types";
+import type { ApiAccessToken, AppUserRole, AppUserStatus, AuditLog, IngestRequest, ItemStatus } from "./types";
 import { APP_USER_ROLES, APP_USER_STATUSES, ITEM_STATUSES } from "./types";
 import { errorResponse, jsonResponse, nowIso, parseBearerToken, randomId, sha256Hex } from "./utils";
 
@@ -568,6 +568,20 @@ function normalizeExpiresAt(value: unknown): string | null {
   return new Date(time).toISOString();
 }
 
+function normalizeOptionalIsoDatetime(value: string | null): string | "__INVALID__" | null {
+  if (value === null) {
+    return null;
+  }
+  if (value.trim().length === 0) {
+    return "__INVALID__";
+  }
+  const time = Date.parse(value);
+  if (Number.isNaN(time)) {
+    return "__INVALID__";
+  }
+  return new Date(time).toISOString();
+}
+
 function isObjectBody(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
@@ -594,6 +608,46 @@ function textResponse(body: string, contentType: string): Response {
       "content-type": contentType
     }
   });
+}
+
+function csvEscape(value: unknown): string {
+  if (value === null || value === undefined) {
+    return "";
+  }
+  const text = String(value);
+  if (/[",\r\n]/.test(text)) {
+    return `"${text.replace(/"/g, "\"\"")}"`;
+  }
+  return text;
+}
+
+function buildAuditCsv(logs: AuditLog[]): string {
+  const headers = [
+    "id",
+    "actor_user_id",
+    "actor_role",
+    "action",
+    "target_type",
+    "target_id",
+    "metadata_json",
+    "created_at"
+  ];
+  const lines = [headers.join(",")];
+  for (const log of logs) {
+    lines.push(
+      [
+        log.id,
+        log.actor_user_id,
+        log.actor_role,
+        log.action,
+        log.target_type,
+        log.target_id,
+        log.metadata_json,
+        log.created_at
+      ].map(csvEscape).join(",")
+    );
+  }
+  return lines.join("\n");
 }
 
 function htmlResponse(html: string): Response {
@@ -648,62 +702,171 @@ function buildConsoleHtml(): string {
     <title>toNotion 管理后台（MVP）</title>
     <style>
       :root {
-        --bg: #f4efe8;
-        --panel: #fffdf9;
-        --line: #d8cec1;
-        --text: #1e1b17;
-        --muted: #6f6356;
-        --accent: #2f6f53;
-        --accent-2: #7a3d2e;
-        --danger: #a32727;
+        --bg: #f2f5f9;
+        --panel: #ffffff;
+        --line: #d9e1ea;
+        --text: #16202b;
+        --muted: #61788f;
+        --brand: #0f5f8a;
+        --brand-strong: #0a4a6c;
+        --accent: #146b54;
+        --accent-2: #8a4a2b;
+        --danger: #b83232;
+        --sidebar-bg: #102a43;
+        --sidebar-line: #24476a;
+        --sidebar-text: #d8e7f7;
+        --sidebar-muted: #9cb6d2;
+        --chip: #eaf2fb;
       }
       * {
         box-sizing: border-box;
       }
       body {
         margin: 0;
-        background: linear-gradient(135deg, #f8f3eb 0%, #efe6d9 100%);
+        background:
+          radial-gradient(circle at 12% 14%, #ffffff 0%, rgba(255, 255, 255, 0) 38%),
+          radial-gradient(circle at 88% 88%, #deefff 0%, rgba(222, 239, 255, 0) 46%),
+          linear-gradient(135deg, #eef4fa 0%, #e7edf5 100%);
         color: var(--text);
         font-family: "IBM Plex Sans", "PingFang SC", "Helvetica Neue", sans-serif;
       }
-      .wrap {
-        width: min(1100px, 96%);
-        margin: 24px auto;
+      .console-shell {
+        width: min(1320px, 96%);
+        margin: 20px auto;
+        display: grid;
+        grid-template-columns: 270px minmax(0, 1fr);
+        border: 1px solid var(--line);
+        border-radius: 18px;
+        overflow: hidden;
+        box-shadow: 0 20px 40px rgba(18, 42, 68, 0.08);
+        min-height: calc(100vh - 40px);
       }
-      h1 {
-        margin: 0 0 10px 0;
-        font-size: 30px;
-        letter-spacing: 0.3px;
+      .sidebar {
+        background: linear-gradient(175deg, var(--sidebar-bg) 0%, #0d253b 100%);
+        color: var(--sidebar-text);
+        border-right: 1px solid var(--sidebar-line);
+        display: flex;
+        flex-direction: column;
+        padding: 16px 14px;
+        gap: 14px;
       }
-      .hint {
-        margin: 0 0 16px 0;
-        color: var(--muted);
+      .brand {
+        border: 1px solid var(--sidebar-line);
+        border-radius: 12px;
+        padding: 12px;
+        background: rgba(255, 255, 255, 0.03);
+      }
+      .brand h1 {
+        margin: 0;
+        font-size: 20px;
+        letter-spacing: 0.5px;
+      }
+      .brand p {
+        margin: 6px 0 0 0;
+        font-size: 13px;
+        color: var(--sidebar-muted);
+      }
+      .menu-group {
+        border: 1px solid var(--sidebar-line);
+        border-radius: 12px;
+        padding: 10px;
+        background: rgba(255, 255, 255, 0.03);
+      }
+      .menu-label {
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.8px;
+        color: var(--sidebar-muted);
+        margin: 0 0 8px 0;
+      }
+      .menu-btn {
+        width: 100%;
+        text-align: left;
+        margin: 0 0 8px 0;
+        border: 1px solid transparent;
+        border-radius: 10px;
+        padding: 9px 10px;
+        background: transparent;
+        color: var(--sidebar-text);
+        cursor: pointer;
         font-size: 14px;
       }
-      .grid {
+      .menu-btn:last-child {
+        margin-bottom: 0;
+      }
+      .menu-btn:hover {
+        border-color: #3a628a;
+        background: rgba(121, 173, 224, 0.15);
+      }
+      .menu-btn.is-active {
+        border-color: #6ba1d8;
+        background: rgba(107, 161, 216, 0.24);
+        color: #ffffff;
+      }
+      .sidebar-foot {
+        margin-top: auto;
+        font-size: 12px;
+        color: var(--sidebar-muted);
+        border-top: 1px solid var(--sidebar-line);
+        padding-top: 10px;
+      }
+      .workspace {
+        padding: 16px;
         display: grid;
-        grid-template-columns: 1fr;
+        grid-template-rows: auto minmax(0, 1fr);
         gap: 14px;
+      }
+      .workspace-head {
+        background: linear-gradient(155deg, #f9fcff 0%, #eff6ff 100%);
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        padding: 14px;
+      }
+      .workspace-head h2 {
+        margin: 0;
+        font-size: 26px;
+      }
+      .workspace-head .hint {
+        margin: 8px 0 0 0;
+        color: var(--muted);
+        font-size: 13px;
+      }
+      .status-line {
+        margin-top: 10px;
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
       }
       .card {
         background: var(--panel);
         border: 1px solid var(--line);
         border-radius: 12px;
-        padding: 14px;
+        padding: 14px 14px 12px;
       }
       .card h2 {
-        margin: 0 0 10px 0;
+        margin: 0 0 8px 0;
         font-size: 18px;
+      }
+      .section-grid {
+        display: grid;
+        grid-template-columns: 1fr;
+        gap: 14px;
+      }
+      .view-section {
+        display: none;
+      }
+      .view-section.is-active {
+        display: block;
+      }
+      .admin-sections {
+        display: grid;
+        gap: 14px;
       }
       .row {
         display: flex;
         gap: 8px;
         flex-wrap: wrap;
         margin: 8px 0;
-      }
-      .col {
-        display: grid;
-        gap: 8px;
       }
       input, select, textarea, button {
         border-radius: 8px;
@@ -717,7 +880,7 @@ function buildConsoleHtml(): string {
       }
       button {
         cursor: pointer;
-        background: white;
+        background: #ffffff;
       }
       button.primary {
         background: var(--accent);
@@ -742,7 +905,8 @@ function buildConsoleHtml(): string {
         display: inline-block;
         padding: 2px 8px;
         border-radius: 999px;
-        border: 1px solid var(--line);
+        border: 1px solid #cddff4;
+        background: var(--chip);
         font-size: 12px;
         margin-right: 6px;
       }
@@ -751,169 +915,253 @@ function buildConsoleHtml(): string {
         border: 1px solid var(--line);
         border-radius: 8px;
         padding: 10px;
-        background: #fff;
-        max-height: 260px;
+        background: #fdfefe;
+        max-height: 280px;
         overflow: auto;
         font-size: 12px;
+        font-family: "IBM Plex Mono", "SFMono-Regular", Menlo, monospace;
       }
-      #adminPanel {
-        display: none;
-      }
-      @media (min-width: 980px) {
-        .grid {
+      @media (min-width: 1080px) {
+        .section-grid.split-2 {
           grid-template-columns: 1fr 1fr;
+        }
+      }
+      @media (max-width: 980px) {
+        .console-shell {
+          grid-template-columns: 1fr;
+          min-height: auto;
+        }
+        .sidebar {
+          border-right: none;
+          border-bottom: 1px solid var(--sidebar-line);
+        }
+        .menu-group {
+          display: grid;
+          grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+          gap: 8px;
+        }
+        .menu-label {
+          grid-column: 1 / -1;
+          margin: 0;
+        }
+        .menu-btn {
+          margin: 0;
         }
       }
     </style>
   </head>
   <body>
-    <div class="wrap">
-      <h1>toNotion 管理后台（MVP）</h1>
-      <p class="hint">使用 API Token 登录并创建会话。普通用户可管理自己的 token 与 Notion 配置；超管额外支持用户管理。</p>
-
-      <div class="card">
-        <h2>登录</h2>
-        <div class="row">
-          <input id="tokenInput" style="flex:1; min-width:280px;" placeholder="Bearer Token，例如 wx2n_..." />
-          <button id="saveTokenBtn" class="primary">登录并加载</button>
-          <button id="clearTokenBtn">退出登录</button>
-        </div>
-        <div class="status" id="loginStatus">未登录</div>
-        <div class="status" id="sessionStatus">会话状态：未建立</div>
-      </div>
-
-      <div class="grid">
-        <div class="card">
-          <h2>我的信息与目标页</h2>
-          <div id="meProfile" class="status">尚未加载</div>
-          <div class="row">
-            <input id="pageIdInput" placeholder="Notion page_id" style="flex:1; min-width:220px;" />
-            <input id="pageTitleInput" placeholder="page_title（可选）" style="flex:1; min-width:180px;" />
-            <button id="saveTargetBtn" class="primary">保存目标页</button>
-          </div>
-          <h2>我的 Notion 凭证</h2>
-          <div class="row">
-            <input id="notionTokenInput" type="password" placeholder="NOTION_API_TOKEN" style="flex:1; min-width:220px;" />
-          </div>
-          <div class="row">
-            <input id="notionVersionInput" value="2025-09-03" placeholder="NOTION_API_VERSION" />
-            <input id="notionBaseUrlInput" value="https://api.notion.com/v1" placeholder="NOTION_API_BASE_URL" style="flex:1; min-width:200px;" />
-          </div>
-          <div class="row">
-            <button id="saveNotionBtn" class="primary">保存 Notion 凭证</button>
-            <button id="deleteNotionBtn" class="danger">删除 Notion 凭证</button>
-            <button id="testNotionBtn">测试连通性</button>
-            <button id="refreshNotionBtn">刷新状态</button>
-          </div>
-          <pre id="notionResult">暂无结果</pre>
+    <div class="console-shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <h1>toNotion Console</h1>
+          <p>多用户同步管理台</p>
         </div>
 
-        <div class="card">
-          <h2>我的 API Token</h2>
-          <div class="row">
-            <input id="tokenLabelInput" placeholder="label（可选）" />
-            <input id="tokenScopesInput" value="items:read,items:write" placeholder="scopes，逗号分隔" style="flex:1; min-width:180px;" />
-          </div>
-          <div class="row">
-            <input id="tokenExpiresInput" placeholder="expires_at（ISO，可选）" style="flex:1; min-width:220px;" />
-            <button id="createSelfTokenBtn" class="primary">创建我的 token</button>
-            <button id="listSelfTokenBtn">刷新列表</button>
-          </div>
-          <pre id="selfTokenResult">暂无结果</pre>
+        <div class="menu-group">
+          <div class="menu-label">基础功能</div>
+          <button class="menu-btn is-active" data-target="section-login">会话登录</button>
+          <button class="menu-btn" data-target="section-profile">个人配置</button>
+          <button class="menu-btn" data-target="section-sync">同步测试</button>
         </div>
 
-        <div class="card">
-          <h2>同步测试工具</h2>
-          <div class="status">输入公众号 URL + notion_api_token，调用 /v1/ingest 并在页面内轮询最终状态。</div>
-          <div class="row">
-            <input
-              id="ingestSourceUrlInput"
-              style="flex:1; min-width:280px;"
-              placeholder="https://mp.weixin.qq.com/s/..."
-              value=""
-            />
-          </div>
-          <div class="row">
-            <input
-              id="ingestNotionTokenInput"
-              type="password"
-              style="flex:1; min-width:280px;"
-              placeholder="notion_api_token（每次提交必填，mock 模式除外）"
-            />
-          </div>
-          <div class="row">
-            <input id="ingestClientItemIdInput" style="flex:1; min-width:220px;" placeholder="client_item_id（可选，默认自动生成）" />
-            <input id="ingestPollTimeoutInput" value="60" placeholder="轮询超时秒数（默认60）" />
-            <button id="submitIngestTestBtn" class="primary">提交并轮询</button>
-          </div>
-          <div class="row">
-            <input id="ingestItemIdInput" style="flex:1; min-width:220px;" placeholder="item_id（可选，手工查询）" />
-            <button id="queryIngestItemBtn">查询 item</button>
-          </div>
-          <div class="status" id="ingestTestStatus">等待提交</div>
-          <pre id="ingestTestResult">暂无结果</pre>
+        <div class="menu-group" id="adminMenuGroup" style="display:none;">
+          <div class="menu-label">超管功能</div>
+          <button class="menu-btn" data-target="section-admin-users">用户管理</button>
+          <button class="menu-btn" data-target="section-admin-user-tokens">用户 Token</button>
+          <button class="menu-btn" data-target="section-admin-audit">审计日志</button>
         </div>
-      </div>
 
-      <div class="card" id="adminPanel">
-        <h2>超管：用户管理</h2>
-        <div class="row">
-          <input id="newUserIdInput" placeholder="user_id" />
-          <input id="newUserNameInput" placeholder="display_name（可选）" />
-          <select id="newUserRoleSelect">
-            <option value="USER">USER</option>
-            <option value="SUPER_ADMIN">SUPER_ADMIN</option>
-          </select>
-          <button id="createUserBtn" class="primary">创建用户</button>
+        <div class="sidebar-foot">左侧菜单用于分区导航。移动端可横向滚动切换分组。</div>
+      </aside>
+
+      <main class="workspace">
+        <header class="workspace-head">
+          <h2>toNotion 管理后台（MVP）</h2>
+          <p class="hint">使用 API Token 登录并创建会话。普通用户可管理自己的 token 与 Notion 配置；超管额外支持用户管理。</p>
+          <div class="status-line">
+            <span class="chip" id="loginStatus">未登录</span>
+            <span class="chip" id="sessionStatus">会话状态：未建立</span>
+          </div>
+        </header>
+
+        <section class="view-section is-active" id="section-login">
+          <div class="card">
+            <h2>会话登录</h2>
+            <div class="row">
+              <input id="tokenInput" style="flex:1; min-width:280px;" placeholder="Bearer Token，例如 wx2n_..." />
+              <button id="saveTokenBtn" class="primary">登录并加载</button>
+              <button id="clearTokenBtn">退出登录</button>
+            </div>
+            <div class="status">登录后会自动加载个人信息与可用能力。</div>
+          </div>
+        </section>
+
+        <section class="view-section" id="section-profile">
+          <div class="section-grid split-2">
+            <div class="card">
+              <h2>我的信息与目标页</h2>
+              <div id="meProfile" class="status">尚未加载</div>
+              <div class="row">
+                <input id="pageIdInput" placeholder="Notion page_id" style="flex:1; min-width:220px;" />
+                <input id="pageTitleInput" placeholder="page_title（可选）" style="flex:1; min-width:180px;" />
+                <button id="saveTargetBtn" class="primary">保存目标页</button>
+              </div>
+
+              <h2>我的 Notion 凭证</h2>
+              <div class="row">
+                <input id="notionTokenInput" type="password" placeholder="NOTION_API_TOKEN" style="flex:1; min-width:220px;" />
+              </div>
+              <div class="row">
+                <input id="notionVersionInput" value="2025-09-03" placeholder="NOTION_API_VERSION" />
+                <input id="notionBaseUrlInput" value="https://api.notion.com/v1" placeholder="NOTION_API_BASE_URL" style="flex:1; min-width:200px;" />
+              </div>
+              <div class="row">
+                <button id="saveNotionBtn" class="primary">保存 Notion 凭证</button>
+                <button id="deleteNotionBtn" class="danger">删除 Notion 凭证</button>
+                <button id="testNotionBtn">测试连通性</button>
+                <button id="refreshNotionBtn">刷新状态</button>
+              </div>
+              <pre id="notionResult">暂无结果</pre>
+            </div>
+
+            <div class="card">
+              <h2>我的 API Token</h2>
+              <div class="row">
+                <input id="tokenLabelInput" placeholder="label（可选）" />
+                <input id="tokenScopesInput" value="items:read,items:write" placeholder="scopes，逗号分隔" style="flex:1; min-width:180px;" />
+              </div>
+              <div class="row">
+                <input id="tokenExpiresInput" placeholder="expires_at（ISO，可选）" style="flex:1; min-width:220px;" />
+                <button id="createSelfTokenBtn" class="primary">创建我的 token</button>
+                <button id="listSelfTokenBtn">刷新列表</button>
+              </div>
+              <pre id="selfTokenResult">暂无结果</pre>
+            </div>
+          </div>
+        </section>
+
+        <section class="view-section" id="section-sync">
+          <div class="card">
+            <h2>同步测试工具</h2>
+            <div class="status">输入公众号 URL + notion_api_token，调用 /v1/ingest 并在页面内轮询最终状态。</div>
+            <div class="row">
+              <input
+                id="ingestSourceUrlInput"
+                style="flex:1; min-width:280px;"
+                placeholder="https://mp.weixin.qq.com/s/..."
+                value=""
+              />
+            </div>
+            <div class="row">
+              <input
+                id="ingestNotionTokenInput"
+                type="password"
+                style="flex:1; min-width:280px;"
+                placeholder="notion_api_token（每次提交必填，mock 模式除外）"
+              />
+            </div>
+            <div class="row">
+              <input id="ingestClientItemIdInput" style="flex:1; min-width:220px;" placeholder="client_item_id（可选，默认自动生成）" />
+              <input id="ingestPollTimeoutInput" value="60" placeholder="轮询超时秒数（默认60）" />
+              <button id="submitIngestTestBtn" class="primary">提交并轮询</button>
+            </div>
+            <div class="row">
+              <input id="ingestItemIdInput" style="flex:1; min-width:220px;" placeholder="item_id（可选，手工查询）" />
+              <button id="queryIngestItemBtn">查询 item</button>
+            </div>
+            <div class="status" id="ingestTestStatus">等待提交</div>
+            <pre id="ingestTestResult">暂无结果</pre>
+          </div>
+        </section>
+
+        <div class="admin-sections" id="adminPanel" style="display:none;">
+          <section class="view-section" id="section-admin-users">
+            <div class="card">
+              <h2>超管：用户管理</h2>
+              <div class="row">
+                <input id="newUserIdInput" placeholder="user_id" />
+                <input id="newUserNameInput" placeholder="display_name（可选）" />
+                <select id="newUserRoleSelect">
+                  <option value="USER">USER</option>
+                  <option value="SUPER_ADMIN">SUPER_ADMIN</option>
+                </select>
+                <button id="createUserBtn" class="primary">创建用户</button>
+              </div>
+              <div class="row">
+                <select id="userStatusFilter">
+                  <option value="">全部状态</option>
+                  <option value="ACTIVE">ACTIVE</option>
+                  <option value="DISABLED">DISABLED</option>
+                  <option value="DELETED">DELETED</option>
+                </select>
+                <button id="listUsersBtn">刷新用户列表</button>
+              </div>
+              <div class="row">
+                <input id="manageUserIdInput" placeholder="目标 user_id" />
+                <select id="manageUserStatusSelect">
+                  <option value="ACTIVE">ACTIVE</option>
+                  <option value="DISABLED">DISABLED</option>
+                  <option value="DELETED">DELETED</option>
+                </select>
+                <button id="updateUserStatusBtn" class="warn">更新状态</button>
+                <button id="deleteUserBtn" class="danger">删除用户</button>
+              </div>
+              <pre id="adminUsersResult">暂无结果</pre>
+            </div>
+          </section>
+
+          <section class="view-section" id="section-admin-user-tokens">
+            <div class="card">
+              <h2>超管：用户 Token 管理</h2>
+              <div class="row">
+                <input id="adminTokenUserIdInput" placeholder="目标 user_id" />
+                <input id="adminTokenLabelInput" placeholder="label（可选）" />
+                <input id="adminTokenScopesInput" value="items:read,items:write" placeholder="scopes，逗号分隔" style="flex:1; min-width:180px;" />
+              </div>
+              <div class="row">
+                <input id="adminTokenExpiresInput" placeholder="expires_at（ISO，可选）" style="flex:1; min-width:220px;" />
+                <select id="adminTokenActiveFilter">
+                  <option value="">全部</option>
+                  <option value="true">active=true</option>
+                  <option value="false">active=false</option>
+                </select>
+                <button id="createUserTokenBtn" class="primary">创建用户 token</button>
+                <button id="listUserTokensBtn">查询用户 token</button>
+              </div>
+              <div class="row">
+                <input id="adminRevokeTokenIdInput" placeholder="待吊销 token_id" style="flex:1; min-width:220px;" />
+                <button id="revokeUserTokenBtn" class="danger">吊销用户 token</button>
+              </div>
+              <pre id="adminUserTokensResult">暂无结果</pre>
+            </div>
+          </section>
+
+          <section class="view-section" id="section-admin-audit">
+            <div class="card">
+              <h2>超管：审计日志</h2>
+              <div class="row">
+                <input id="auditLimitInput" value="50" placeholder="limit (1-500)" />
+                <input id="auditPageTokenInput" placeholder="page_token（可选）" />
+              </div>
+              <div class="row">
+                <input id="auditFromInput" placeholder="from（ISO 时间，可选）" style="flex:1; min-width:220px;" />
+                <input id="auditToInput" placeholder="to（ISO 时间，可选）" style="flex:1; min-width:220px;" />
+              </div>
+              <div class="row">
+                <input id="auditActorInput" placeholder="actor_user_id（可选）" />
+                <input id="auditActionInput" placeholder="action（可选）" />
+                <input id="auditTargetTypeInput" placeholder="target_type（可选）" />
+                <input id="auditTargetIdInput" placeholder="target_id（可选）" />
+                <button id="listAuditLogsBtn">刷新审计日志</button>
+                <button id="exportAuditJsonBtn">导出 JSON</button>
+                <button id="exportAuditCsvBtn">导出 CSV</button>
+              </div>
+              <pre id="auditLogsResult">暂无结果</pre>
+            </div>
+          </section>
         </div>
-        <div class="row">
-          <select id="userStatusFilter">
-            <option value="">全部状态</option>
-            <option value="ACTIVE">ACTIVE</option>
-            <option value="DISABLED">DISABLED</option>
-            <option value="DELETED">DELETED</option>
-          </select>
-          <button id="listUsersBtn">刷新用户列表</button>
-        </div>
-        <div class="row">
-          <input id="manageUserIdInput" placeholder="目标 user_id" />
-          <select id="manageUserStatusSelect">
-            <option value="ACTIVE">ACTIVE</option>
-            <option value="DISABLED">DISABLED</option>
-            <option value="DELETED">DELETED</option>
-          </select>
-          <button id="updateUserStatusBtn" class="warn">更新状态</button>
-          <button id="deleteUserBtn" class="danger">删除用户</button>
-        </div>
-        <pre id="adminUsersResult">暂无结果</pre>
-        <h2>超管：用户 Token 管理</h2>
-        <div class="row">
-          <input id="adminTokenUserIdInput" placeholder="目标 user_id" />
-          <input id="adminTokenLabelInput" placeholder="label（可选）" />
-          <input id="adminTokenScopesInput" value="items:read,items:write" placeholder="scopes，逗号分隔" style="flex:1; min-width:180px;" />
-        </div>
-        <div class="row">
-          <input id="adminTokenExpiresInput" placeholder="expires_at（ISO，可选）" style="flex:1; min-width:220px;" />
-          <select id="adminTokenActiveFilter">
-            <option value="">全部</option>
-            <option value="true">active=true</option>
-            <option value="false">active=false</option>
-          </select>
-          <button id="createUserTokenBtn" class="primary">创建用户 token</button>
-          <button id="listUserTokensBtn">查询用户 token</button>
-        </div>
-        <div class="row">
-          <input id="adminRevokeTokenIdInput" placeholder="待吊销 token_id" style="flex:1; min-width:220px;" />
-          <button id="revokeUserTokenBtn" class="danger">吊销用户 token</button>
-        </div>
-        <pre id="adminUserTokensResult">暂无结果</pre>
-        <h2>超管：审计日志</h2>
-        <div class="row">
-          <input id="auditLimitInput" value="50" placeholder="limit (1-500)" />
-          <button id="listAuditLogsBtn">刷新审计日志</button>
-        </div>
-        <pre id="auditLogsResult">暂无结果</pre>
-      </div>
+      </main>
     </div>
 
     <script>
@@ -921,6 +1169,7 @@ function buildConsoleHtml(): string {
       const sessionStatusEl = document.getElementById("sessionStatus");
       const meProfileEl = document.getElementById("meProfile");
       const adminPanelEl = document.getElementById("adminPanel");
+      const adminMenuGroupEl = document.getElementById("adminMenuGroup");
       const tokenInputEl = document.getElementById("tokenInput");
       const selfTokenResultEl = document.getElementById("selfTokenResult");
       const notionResultEl = document.getElementById("notionResult");
@@ -929,13 +1178,52 @@ function buildConsoleHtml(): string {
       const auditLogsResultEl = document.getElementById("auditLogsResult");
       const ingestTestStatusEl = document.getElementById("ingestTestStatus");
       const ingestTestResultEl = document.getElementById("ingestTestResult");
+      const menuButtons = Array.from(document.querySelectorAll(".menu-btn"));
+      const viewSections = Array.from(document.querySelectorAll(".view-section"));
 
       const INGEST_FINAL_STATUSES = new Set(["SYNCED", "SYNC_FAILED", "PARSE_FAILED"]);
+      const ADMIN_SECTION_IDS = new Set([
+        "section-admin-users",
+        "section-admin-user-tokens",
+        "section-admin-audit"
+      ]);
       const SESSION_WARN_THRESHOLD_MS = 10 * 60 * 1000;
       const SESSION_AUTO_REFRESH_THRESHOLD_MS = 5 * 60 * 1000;
       let sessionExpiresAtMs = null;
       let sessionTimerHandle = null;
       let sessionRefreshInFlight = false;
+      let isAdminSession = false;
+
+      function isAdminSectionId(sectionId) {
+        return ADMIN_SECTION_IDS.has(sectionId);
+      }
+
+      function activateSection(sectionId) {
+        let targetId = sectionId;
+        if (isAdminSectionId(targetId) && !isAdminSession) {
+          targetId = "section-profile";
+        }
+        const targetExists = viewSections.some((section) => section.id === targetId);
+        if (!targetExists) {
+          return;
+        }
+        for (const section of viewSections) {
+          section.classList.toggle("is-active", section.id === targetId);
+        }
+        for (const button of menuButtons) {
+          button.classList.toggle("is-active", button.dataset.target === targetId);
+        }
+      }
+
+      function setAdminVisibility(isAdmin) {
+        isAdminSession = Boolean(isAdmin);
+        adminPanelEl.style.display = isAdminSession ? "" : "none";
+        adminMenuGroupEl.style.display = isAdminSession ? "" : "none";
+        const activeSection = viewSections.find((section) => section.classList.contains("is-active"));
+        if (!isAdminSession && activeSection && isAdminSectionId(activeSection.id)) {
+          activateSection("section-profile");
+        }
+      }
 
       function getToken() {
         return (tokenInputEl.value || "").trim();
@@ -1076,7 +1364,8 @@ function buildConsoleHtml(): string {
               clearSessionState();
               setStatus("会话已失效，请重新登录");
               meProfileEl.textContent = "尚未加载";
-              adminPanelEl.style.display = "none";
+              setAdminVisibility(false);
+              activateSection("section-login");
             }
             return;
           }
@@ -1093,9 +1382,10 @@ function buildConsoleHtml(): string {
           const { resp, body } = await api("/v1/me", { method: "GET" });
           if (!resp.ok) {
             meProfileEl.textContent = "加载失败: " + pretty(body);
-            adminPanelEl.style.display = "none";
+            setAdminVisibility(false);
             if (resp.status === 401) {
               setStatus("未登录");
+              activateSection("section-login");
             }
             return;
           }
@@ -1107,15 +1397,16 @@ function buildConsoleHtml(): string {
             "<span class='chip'>status: " + (user.status || "-") + "</span>"
           ];
           meProfileEl.innerHTML = chips.join("");
-          adminPanelEl.style.display = isAdmin ? "block" : "none";
+          setAdminVisibility(isAdmin);
           setStatus("登录成功（" + (isAdmin ? "超管" : "普通用户") + "）");
+          activateSection("section-profile");
           if (isAdmin) {
             await refreshUsers();
             await refreshAuditLogs();
           }
         } catch (error) {
           meProfileEl.textContent = "加载失败: " + String(error);
-          adminPanelEl.style.display = "none";
+          setAdminVisibility(false);
         }
       }
 
@@ -1166,12 +1457,108 @@ function buildConsoleHtml(): string {
         }
       }
 
-      async function refreshAuditLogs() {
+      function buildAuditLogQuery(extraParams) {
+        const params = new URLSearchParams();
         const limitRaw = (document.getElementById("auditLimitInput").value || "").trim();
-        const query = limitRaw ? ("?limit=" + encodeURIComponent(limitRaw)) : "";
+        const pageTokenRaw = (document.getElementById("auditPageTokenInput").value || "").trim();
+        const fromRaw = (document.getElementById("auditFromInput").value || "").trim();
+        const toRaw = (document.getElementById("auditToInput").value || "").trim();
+        const actorUserId = (document.getElementById("auditActorInput").value || "").trim();
+        const action = (document.getElementById("auditActionInput").value || "").trim();
+        const targetType = (document.getElementById("auditTargetTypeInput").value || "").trim();
+        const targetId = (document.getElementById("auditTargetIdInput").value || "").trim();
+
+        if (limitRaw) {
+          params.set("limit", limitRaw);
+        }
+        if (pageTokenRaw) {
+          params.set("page_token", pageTokenRaw);
+        }
+        if (fromRaw) {
+          params.set("from", fromRaw);
+        }
+        if (toRaw) {
+          params.set("to", toRaw);
+        }
+        if (actorUserId) {
+          params.set("actor_user_id", actorUserId);
+        }
+        if (action) {
+          params.set("action", action);
+        }
+        if (targetType) {
+          params.set("target_type", targetType);
+        }
+        if (targetId) {
+          params.set("target_id", targetId);
+        }
+        if (extraParams && typeof extraParams === "object") {
+          for (const [key, value] of Object.entries(extraParams)) {
+            if (value === null || value === undefined || value === "") {
+              continue;
+            }
+            params.set(key, String(value));
+          }
+        }
+        return params;
+      }
+
+      async function refreshAuditLogs() {
+        const params = buildAuditLogQuery();
+        const queryText = params.toString();
+        const query = queryText ? ("?" + queryText) : "";
         try {
           const { resp, body } = await api("/v1/admin/audit-logs" + query, { method: "GET" });
+          if (resp.ok && body && typeof body === "object") {
+            const nextToken =
+              typeof body.next_page_token === "string" ? body.next_page_token : "";
+            document.getElementById("auditPageTokenInput").value = nextToken;
+          }
           auditLogsResultEl.textContent = pretty({ status: resp.status, body });
+        } catch (error) {
+          auditLogsResultEl.textContent = String(error);
+        }
+      }
+
+      async function exportAuditLogs(format) {
+        const params = buildAuditLogQuery({
+          format,
+          limit: 500,
+          page_token: ""
+        });
+        params.delete("page_token");
+        const queryText = params.toString();
+        const path = "/v1/admin/audit-logs" + (queryText ? ("?" + queryText) : "");
+        try {
+          const token = getToken();
+          const headers = {};
+          if (token) {
+            headers.authorization = "Bearer " + token;
+          }
+          const resp = await fetch(path, { method: "GET", credentials: "same-origin", headers });
+          if (!resp.ok) {
+            const text = await resp.text();
+            let body = text;
+            try {
+              body = text ? JSON.parse(text) : null;
+            } catch {
+              // Keep raw text when parsing fails.
+            }
+            auditLogsResultEl.textContent = pretty({ status: resp.status, body });
+            return;
+          }
+          const content = await resp.text();
+          const blob = new Blob([content], { type: resp.headers.get("content-type") || "text/plain" });
+          const url = URL.createObjectURL(blob);
+          const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+          const extension = format === "csv" ? "csv" : "json";
+          const anchor = document.createElement("a");
+          anchor.href = url;
+          anchor.download = "audit-logs-" + timestamp + "." + extension;
+          document.body.appendChild(anchor);
+          anchor.click();
+          anchor.remove();
+          URL.revokeObjectURL(url);
         } catch (error) {
           auditLogsResultEl.textContent = String(error);
         }
@@ -1273,6 +1660,7 @@ function buildConsoleHtml(): string {
         const token = getToken();
         if (!token) {
           setStatus("token 不能为空");
+          activateSection("section-login");
           return;
         }
         try {
@@ -1290,6 +1678,7 @@ function buildConsoleHtml(): string {
           }
           if (!resp.ok) {
             setStatus("登录失败: " + pretty(body));
+            activateSection("section-login");
             return;
           }
           applySessionExpiry(body && body.expires_at);
@@ -1300,6 +1689,7 @@ function buildConsoleHtml(): string {
           await refreshNotionCredential();
         } catch (error) {
           setStatus("登录失败: " + String(error));
+          activateSection("section-login");
         }
       });
 
@@ -1316,7 +1706,8 @@ function buildConsoleHtml(): string {
         clearSessionState();
         setStatus("已退出登录");
         meProfileEl.textContent = "尚未加载";
-        adminPanelEl.style.display = "none";
+        setAdminVisibility(false);
+        activateSection("section-login");
       });
 
       document.getElementById("saveTargetBtn").addEventListener("click", async () => {
@@ -1496,6 +1887,8 @@ function buildConsoleHtml(): string {
         }
       });
       document.getElementById("listAuditLogsBtn").addEventListener("click", refreshAuditLogs);
+      document.getElementById("exportAuditJsonBtn").addEventListener("click", () => exportAuditLogs("json"));
+      document.getElementById("exportAuditCsvBtn").addEventListener("click", () => exportAuditLogs("csv"));
 
       document.getElementById("updateUserStatusBtn").addEventListener("click", async () => {
         const userId = (document.getElementById("manageUserIdInput").value || "").trim();
@@ -1537,12 +1930,25 @@ function buildConsoleHtml(): string {
         }
       });
 
+      for (const button of menuButtons) {
+        button.addEventListener("click", () => {
+          const target = button.dataset.target || "section-login";
+          activateSection(target);
+        });
+      }
+
+      setAdminVisibility(false);
+      activateSection("section-login");
+
       (async function bootstrap() {
         try {
           const { resp, body } = await api("/v1/console/session", { method: "GET" });
           if (!resp.ok) {
             clearSessionState();
             setStatus("未登录");
+            meProfileEl.textContent = "尚未加载";
+            setAdminVisibility(false);
+            activateSection("section-login");
             return;
           }
           applySessionExpiry(body && body.session_expires_at);
@@ -1552,6 +1958,9 @@ function buildConsoleHtml(): string {
         } catch {
           clearSessionState();
           setStatus("未登录");
+          meProfileEl.textContent = "尚未加载";
+          setAdminVisibility(false);
+          activateSection("section-login");
         }
       })();
     </script>
@@ -3487,10 +3896,71 @@ export function createApp(options?: { store?: Store }) {
       }
       limit = parsed;
     }
+    const pageTokenRaw = url.searchParams.get("page_token");
+    let offset = 0;
+    if (pageTokenRaw !== null) {
+      if (pageTokenRaw.trim().length === 0) {
+        return errorResponse(400, "BAD_REQUEST", "page_token should be a non-negative integer.");
+      }
+      const parsed = Number.parseInt(pageTokenRaw, 10);
+      if (!Number.isFinite(parsed) || parsed < 0) {
+        return errorResponse(400, "BAD_REQUEST", "page_token should be a non-negative integer.");
+      }
+      offset = parsed;
+    }
+    const actorUserIdRaw = url.searchParams.get("actor_user_id");
+    const actionRaw = url.searchParams.get("action");
+    const targetTypeRaw = url.searchParams.get("target_type");
+    const targetIdRaw = url.searchParams.get("target_id");
+    const createdFromRaw = url.searchParams.get("from");
+    const createdToRaw = url.searchParams.get("to");
+    const formatRaw = (url.searchParams.get("format") ?? "json").trim().toLowerCase();
+    if (formatRaw !== "json" && formatRaw !== "csv") {
+      return errorResponse(400, "BAD_REQUEST", "format must be json or csv.");
+    }
+    const actorUserId = actorUserIdRaw && actorUserIdRaw.trim().length > 0 ? actorUserIdRaw.trim() : null;
+    const action = actionRaw && actionRaw.trim().length > 0 ? actionRaw.trim() : null;
+    const targetType = targetTypeRaw && targetTypeRaw.trim().length > 0 ? targetTypeRaw.trim() : null;
+    const targetId = targetIdRaw && targetIdRaw.trim().length > 0 ? targetIdRaw.trim() : null;
+    const createdFrom = normalizeOptionalIsoDatetime(createdFromRaw);
+    if (createdFrom === "__INVALID__") {
+      return errorResponse(400, "BAD_REQUEST", "from must be a valid ISO datetime.");
+    }
+    const createdTo = normalizeOptionalIsoDatetime(createdToRaw);
+    if (createdTo === "__INVALID__") {
+      return errorResponse(400, "BAD_REQUEST", "to must be a valid ISO datetime.");
+    }
+    if (createdFrom && createdTo && Date.parse(createdFrom) > Date.parse(createdTo)) {
+      return errorResponse(400, "BAD_REQUEST", "from should be less than or equal to to.");
+    }
 
     return withStore(env, async (store) => {
-      const logs = await store.listAuditLogs({ limit });
-      return jsonResponse({ logs });
+      const fetchLimit = formatRaw === "json" ? limit + 1 : limit;
+      const logs = await store.listAuditLogs({
+        limit: fetchLimit,
+        pageToken: String(offset),
+        actorUserId,
+        action,
+        targetType,
+        targetId,
+        createdFrom,
+        createdTo
+      });
+      if (formatRaw === "csv") {
+        const csvContent = buildAuditCsv(logs);
+        return new Response(csvContent, {
+          headers: {
+            "content-type": "text/csv; charset=utf-8",
+            "content-disposition": 'attachment; filename="audit-logs.csv"'
+          }
+        });
+      }
+      const hasNext = logs.length > limit;
+      const pageLogs = hasNext ? logs.slice(0, limit) : logs;
+      return jsonResponse({
+        logs: pageLogs,
+        next_page_token: hasNext ? String(offset + limit) : null
+      });
     });
   }
 

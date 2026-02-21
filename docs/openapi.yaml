@@ -803,6 +803,43 @@ paths:
             minimum: 1
             maximum: 500
             default: 100
+        - in: query
+          name: page_token
+          schema:
+            type: string
+          description: Offset-based pagination token returned by previous response.
+        - in: query
+          name: actor_user_id
+          schema:
+            type: string
+        - in: query
+          name: action
+          schema:
+            type: string
+        - in: query
+          name: target_type
+          schema:
+            type: string
+        - in: query
+          name: target_id
+          schema:
+            type: string
+        - in: query
+          name: from
+          schema:
+            type: string
+          description: Filter logs with created_at >= from (ISO datetime).
+        - in: query
+          name: to
+          schema:
+            type: string
+          description: Filter logs with created_at <= to (ISO datetime).
+        - in: query
+          name: format
+          schema:
+            type: string
+            enum: [json, csv]
+            default: json
       responses:
         '200':
           description: Audit log list
@@ -810,6 +847,9 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/AdminAuditLogListResponse'
+            text/csv:
+              schema:
+                type: string
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
@@ -1488,3 +1528,6 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/AdminAuditLog'
+        next_page_token:
+          type: string
+          nullable: true

@@ -12,7 +12,7 @@
 
 当前痛点：
 - 管理员与普通用户 token 管理依赖命令行/curl，操作成本高
-- `NOTION_API_TOKEN` 仍是全局环境变量，不支持每个用户独立 Notion 凭证
+- 设计文档与实现存在漂移（尤其是 ingest/retry 凭证来源策略）
 - 缺少用户生命周期管理（创建、禁用、删除）
 
 本设计目标：
@@ -33,7 +33,7 @@
   - 管理自己的 API Token（创建/查看元信息/吊销）
   - 配置自己的 Notion 凭证（`NOTION_API_TOKEN`）
   - 配置自己的 Notion 目标页面（`page_id`）
-- 同步链路改为“按 user_id 读取用户 Notion 凭证”
+- 同步链路使用“请求级 `notion_api_token`”（ingest/retry）
 
 ### 2.2 非 MVP（后续）
 - 密码登录/第三方 OAuth 登录
@@ -45,8 +45,8 @@
 - `ADMIN_TOKEN`：具备管理 scope 的 API token（建议仅超管持有）
 - `WEB_TOOL_API_TOKEN`：本质也是 API token，通常是普通用户 token
 - `NOTION_API_TOKEN`：
-  - 现状：全局环境变量（系统级）
-  - 目标：用户级凭证（每个用户独立保存）
+  - 现状：`/v1/ingest` 与 `/v1/items/{itemId}/retry` 使用请求级 `notion_api_token`
+  - 同时支持：用户级凭证加密存储（用于 OAuth、凭证管理、连通性测试等）
 
 结论：`ADMIN_TOKEN` / `WEB_TOOL_API_TOKEN` 都属于统一的 `api_access_tokens` 体系，只是 scope 不同。
 
@@ -124,8 +124,8 @@
 ### 6.4 兼容策略
 
 - 保留现有 `api_access_tokens` 表
-- 保留现有 `user_settings` 表（当前底层列名仍是 `target_database_*`，语义已是 page）
-- 后续可在独立迁移中重命名列为 `target_page_*`
+- 保留现有 `user_settings` 表，统一使用 `target_page_*` 列名
+- 旧环境通过迁移脚本完成 `target_database_* -> target_page_*` 重命名
 
 ## 7. 接口设计（草案）
 
@@ -164,6 +164,8 @@
   - 删除我的 Notion 凭证
 - `PUT /v1/me/notion-target`
   - 设置我的 `page_id/page_title`
+- `POST /v1/me/notion-connectivity-test`
+  - 校验 Notion 凭证与目标页连通性
 
 ## 7.3 后台会话接口（可选）
 
@@ -175,15 +177,14 @@
 ## 8. 同步链路改造
 
 ## 8.1 运行时 Notion 凭证来源优先级
-1. 用户级 `user_notion_credentials`（首选）
-2. 全局环境变量 `NOTION_API_TOKEN`（迁移期兜底）
-3. 若都不存在，返回 `NOTION_TOKEN_MISSING`
+1. `POST /v1/ingest`、`POST /v1/items/{itemId}/retry`：仅使用请求体 `notion_api_token`
+2. `POST /v1/me/notion-connectivity-test`：优先请求体 token，未传时回退用户已保存凭证
+3. 用户凭证由 `user_notion_credentials` 加密存储，不再作为 ingest/retry 默认兜底
 
 ## 8.2 处理逻辑
-- `processItem` 中按 `item.user_id` 读取：
-  - 用户 Notion 凭证
-  - 用户 `page_id` 设置
-- 每个用户写入各自 Notion 空间，互不影响
+- `processItem` 中按 `item.user_id` 读取用户 `page_id` 设置
+- Notion 凭证通过任务请求参数传入（请求级 token）
+- 每个用户写入各自 Notion 目标空间，互不影响
 
 ## 9. 后台页面设计（MVP）
 
@@ -222,9 +223,9 @@
 - 普通用户可自助配置 Notion 与 token
 
 ### 阶段 C：链路切换
-- 同步链路优先读取用户级 Notion 凭证
-- 全局 `NOTION_API_TOKEN` 仅保留兜底
-- 观察期后评估是否移除兜底
+- 收口文档与实现差异，避免“设计与代码双轨”
+- 完成 `user_settings` 列名技术债清理（统一 `target_page_*`）
+- 评估并下线历史兼容入口（如 legacy target endpoint）
 
 ## 12. 验收标准（MVP）
 
@@ -244,13 +245,11 @@
 - 风险：误删用户导致数据不可恢复
   - 应对：逻辑删除 + 延迟物理删除策略
 
-## 14. 与现状差距清单（实施前）
+## 14. 与现状差距清单（当前）
 
-1. 当前无 `app_users` 主档，需补
-2. 当前无用户级 Notion 凭证存储，需新增
-3. 当前仅有 token 管理接口，无用户管理接口
-4. 当前无管理后台页面
-5. 当前缺少审计日志
+1. 设计文档部分章节仍可能滞后于实现，需要持续同步维护
+2. legacy 接口（如 `/v1/settings/notion-target`）仍需评估最终下线窗口
+3. 异步执行仍依赖 `waitUntil`，生产级建议迁移到 Queues
 
 ---
 
