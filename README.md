@@ -85,7 +85,7 @@ https://tonotion.iiioiii.xin/console
 
 - `GET /healthz`
 - `GET /docs`（Swagger UI 在线文档）
-- `GET /console`（管理后台 MVP 页面）
+- `GET /console`（管理后台 MVP 页面，内置同步测试工具）
 - `GET /openapi.yaml`（OpenAPI 规范）
 - `POST /v1/ingest`
 - `GET /v1/items`
@@ -447,6 +447,7 @@ http://127.0.0.1:4173
 
 说明：
 
+- `/console` 已内置“同步测试工具”（提交 URL + 自动轮询），优先推荐在后台直接测试。
 - 该工具在 `test/web-tool` 下，是独立的本地页面与本地代理服务。
 - 页面只需要输入公众号 URL，点击提交后会调用 `/v1/ingest` 并轮询到最终状态。
 - 默认端口为 `4173`，可通过 `WEB_TOOL_PORT` 覆盖。
@@ -463,6 +464,7 @@ http://127.0.0.1:4173
   - 查看 `/v1/me` 资料
   - 管理自己的 `/v1/me/tokens*`
   - 管理自己的 `/v1/me/notion-credentials` 与 `/v1/me/notion-target`
+  - 使用“同步测试工具”提交公众号 URL，并轮询 `/v1/items/{itemId}` 查看最终状态
 - 超管额外能力：
   - 管理 `/v1/admin/users*`（创建/查询/更新/删除用户）
   - 管理指定用户的 `/v1/admin/users/{userId}/tokens*`

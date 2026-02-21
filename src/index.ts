@@ -481,6 +481,30 @@ function buildConsoleHtml(): string {
           </div>
           <pre id="selfTokenResult">暂无结果</pre>
         </div>
+
+        <div class="card">
+          <h2>同步测试工具</h2>
+          <div class="status">输入公众号 URL，直接调用 /v1/ingest 并在页面内轮询最终状态。</div>
+          <div class="row">
+            <input
+              id="ingestSourceUrlInput"
+              style="flex:1; min-width:280px;"
+              placeholder="https://mp.weixin.qq.com/s/..."
+              value="https://mp.weixin.qq.com/s/BR7smBzxDaLcH8j8M6oJ9A"
+            />
+          </div>
+          <div class="row">
+            <input id="ingestClientItemIdInput" style="flex:1; min-width:220px;" placeholder="client_item_id（可选，默认自动生成）" />
+            <input id="ingestPollTimeoutInput" value="60" placeholder="轮询超时秒数（默认60）" />
+            <button id="submitIngestTestBtn" class="primary">提交并轮询</button>
+          </div>
+          <div class="row">
+            <input id="ingestItemIdInput" style="flex:1; min-width:220px;" placeholder="item_id（可选，手工查询）" />
+            <button id="queryIngestItemBtn">查询 item</button>
+          </div>
+          <div class="status" id="ingestTestStatus">等待提交</div>
+          <pre id="ingestTestResult">暂无结果</pre>
+        </div>
       </div>
 
       <div class="card" id="adminPanel">
@@ -556,6 +580,10 @@ function buildConsoleHtml(): string {
       const adminUsersResultEl = document.getElementById("adminUsersResult");
       const adminUserTokensResultEl = document.getElementById("adminUserTokensResult");
       const auditLogsResultEl = document.getElementById("auditLogsResult");
+      const ingestTestStatusEl = document.getElementById("ingestTestStatus");
+      const ingestTestResultEl = document.getElementById("ingestTestResult");
+
+      const INGEST_FINAL_STATUSES = new Set(["SYNCED", "SYNC_FAILED", "PARSE_FAILED"]);
 
       function getToken() {
         return (tokenInputEl.value || "").trim();
@@ -567,6 +595,33 @@ function buildConsoleHtml(): string {
 
       function pretty(data) {
         return JSON.stringify(data, null, 2);
+      }
+
+      function parsePositiveInt(raw, fallback) {
+        const parsed = Number.parseInt(raw || "", 10);
+        return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+      }
+
+      function sleep(ms) {
+        return new Promise((resolve) => setTimeout(resolve, ms));
+      }
+
+      function setIngestStatus(text) {
+        ingestTestStatusEl.textContent = text;
+      }
+
+      function getItemFromBody(body) {
+        if (!body || typeof body !== "object" || !body.item || typeof body.item !== "object") {
+          return null;
+        }
+        return body.item;
+      }
+
+      function getItemIdFromBody(body) {
+        if (!body || typeof body !== "object" || typeof body.item_id !== "string") {
+          return null;
+        }
+        return body.item_id;
       }
 
       async function api(path, init) {
@@ -675,6 +730,92 @@ function buildConsoleHtml(): string {
         }
       }
 
+      async function queryIngestItem(itemId) {
+        const { resp, body } = await api("/v1/items/" + encodeURIComponent(itemId), { method: "GET" });
+        ingestTestResultEl.textContent = pretty({ status: resp.status, body });
+        const item = getItemFromBody(body);
+        const itemStatus = item && typeof item.status === "string" ? item.status : "";
+        if (itemStatus) {
+          setIngestStatus("item 状态：" + itemStatus);
+        }
+        return { resp, body, item };
+      }
+
+      async function submitAndPollIngest() {
+        const sourceUrl = (document.getElementById("ingestSourceUrlInput").value || "").trim();
+        const clientItemIdInput = (document.getElementById("ingestClientItemIdInput").value || "").trim();
+        const timeoutSec = parsePositiveInt((document.getElementById("ingestPollTimeoutInput").value || "").trim(), 60);
+
+        if (!sourceUrl) {
+          setIngestStatus("请先输入公众号 URL");
+          return;
+        }
+
+        const clientItemId = clientItemIdInput || ("console-test-" + Date.now());
+        setIngestStatus("提交中...");
+        ingestTestResultEl.textContent = "提交中...";
+
+        let ingestResp;
+        try {
+          ingestResp = await api("/v1/ingest", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              client_item_id: clientItemId,
+              source_url: sourceUrl,
+              raw_text: sourceUrl
+            })
+          });
+        } catch (error) {
+          setIngestStatus("提交失败: " + String(error));
+          ingestTestResultEl.textContent = String(error);
+          return;
+        }
+
+        ingestTestResultEl.textContent = pretty({ status: ingestResp.resp.status, body: ingestResp.body });
+        const itemId = getItemIdFromBody(ingestResp.body);
+        if (itemId) {
+          document.getElementById("ingestItemIdInput").value = itemId;
+        }
+
+        if (!ingestResp.resp.ok || !itemId) {
+          setIngestStatus("提交完成，但未获取到可轮询的 item_id");
+          return;
+        }
+
+        setIngestStatus("已提交，开始轮询 item 状态...");
+        const deadline = Date.now() + timeoutSec * 1000;
+        while (Date.now() < deadline) {
+          await sleep(2000);
+          let queryResult;
+          try {
+            queryResult = await queryIngestItem(itemId);
+          } catch (error) {
+            setIngestStatus("查询 item 失败: " + String(error));
+            ingestTestResultEl.textContent = String(error);
+            return;
+          }
+
+          if (!queryResult.resp.ok || !queryResult.item) {
+            continue;
+          }
+          const status = typeof queryResult.item.status === "string" ? queryResult.item.status : "";
+          if (!status) {
+            continue;
+          }
+          if (INGEST_FINAL_STATUSES.has(status)) {
+            const notionUrl =
+              typeof queryResult.item.notion_page_url === "string" ? queryResult.item.notion_page_url : "";
+            setIngestStatus(
+              "轮询完成，最终状态：" + status + (notionUrl ? "，Notion 页面：" + notionUrl : "")
+            );
+            return;
+          }
+        }
+
+        setIngestStatus("轮询超时（" + timeoutSec + " 秒），请稍后手工查询 item");
+      }
+
       document.getElementById("saveTokenBtn").addEventListener("click", async () => {
         const token = getToken();
         if (!token) {
@@ -741,6 +882,20 @@ function buildConsoleHtml(): string {
 
       document.getElementById("refreshNotionBtn").addEventListener("click", refreshNotionCredential);
       document.getElementById("listSelfTokenBtn").addEventListener("click", refreshSelfTokens);
+      document.getElementById("submitIngestTestBtn").addEventListener("click", submitAndPollIngest);
+      document.getElementById("queryIngestItemBtn").addEventListener("click", async () => {
+        const itemId = (document.getElementById("ingestItemIdInput").value || "").trim();
+        if (!itemId) {
+          setIngestStatus("请先输入 item_id");
+          return;
+        }
+        try {
+          await queryIngestItem(itemId);
+        } catch (error) {
+          setIngestStatus("查询 item 失败: " + String(error));
+          ingestTestResultEl.textContent = String(error);
+        }
+      });
 
       document.getElementById("createSelfTokenBtn").addEventListener("click", async () => {
         const label = (document.getElementById("tokenLabelInput").value || "").trim();

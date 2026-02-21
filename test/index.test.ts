@@ -151,6 +151,8 @@ describe("workers backend api", () => {
     const html = await response.text();
     expect(html).toContain("toNotion 管理后台（MVP）");
     expect(html).toContain("/v1/me");
+    expect(html).toContain("同步测试工具");
+    expect(html).toContain("submitIngestTestBtn");
   });
 
   it("returns 500 when DB binding is missing", async () => {
