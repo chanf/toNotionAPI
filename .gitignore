@@ -20,6 +20,9 @@ coverage/
 .env.*
 !.env.example
 
+# local configs (may contain secrets)
+.config/
+
 # OS / editor
 .DS_Store
 .vscode/

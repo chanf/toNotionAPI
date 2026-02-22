@@ -173,7 +173,7 @@ async function appendNotionChildren(input: {
   const chunks = chunkArray(input.children, NOTION_MAX_CHILDREN_PER_REQUEST);
   for (const chunk of chunks) {
     const response = await fetch(`${input.runtime.apiBaseUrl}/blocks/${input.pageId}/children`, {
-      method: "POST",
+      method: "PATCH",
       headers: notionHeaders(input.runtime),
       body: JSON.stringify({
         children: chunk

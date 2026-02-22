@@ -1,3 +1,5 @@
+import fs from "node:fs";
+
 const DEFAULT_BASE_URL = "https://your-worker.example.com";
 const DEFAULT_SOURCE_URL = "https://mp.weixin.qq.com/s/_P_1E-Stfo-8-eCRUh8Ygg";
 const DEFAULT_POLL_TIMEOUT_SEC = 30;
@@ -10,8 +12,9 @@ function usage() {
 Optional flags:
   --base-url <url>         API base URL (default: ${DEFAULT_BASE_URL})
   --token <token>          Bearer token (fallback: API_TOKEN env)
-  --notion-token <token>   Notion API token (required)
-  --source-url <url>       WeChat article URL (default: ${DEFAULT_SOURCE_URL})
+  --notion-token <token>   Notion API token (fallback: NOTION_API_TOKEN env; required)
+  --source-url <url>       WeChat article URL (can be repeated; default: ${DEFAULT_SOURCE_URL})
+  --source-file <path>     Read URLs from a file (one per line, supports # comments)
   --client-item-id <id>    Custom client item id
   --timeout-sec <n>        Poll timeout in seconds (default: ${DEFAULT_POLL_TIMEOUT_SEC})
   --interval-ms <n>        Poll interval in ms (default: ${DEFAULT_POLL_INTERVAL_MS})
@@ -25,7 +28,8 @@ function parseArgs(argv) {
     baseUrl: null,
     token: null,
     notionToken: null,
-    sourceUrl: null,
+    sourceUrls: [],
+    sourceFile: null,
     clientItemId: null,
     timeoutSec: DEFAULT_POLL_TIMEOUT_SEC,
     intervalMs: DEFAULT_POLL_INTERVAL_MS,
@@ -54,7 +58,15 @@ function parseArgs(argv) {
       continue;
     }
     if (arg === "--source-url") {
-      parsed.sourceUrl = argv[i + 1] ?? null;
+      const value = (argv[i + 1] ?? "").trim();
+      if (value) {
+        parsed.sourceUrls.push(value);
+      }
+      i += 1;
+      continue;
+    }
+    if (arg === "--source-file") {
+      parsed.sourceFile = argv[i + 1] ?? null;
       i += 1;
       continue;
     }
@@ -88,6 +100,30 @@ function trimTrailingSlash(url) {
   return url.replace(/\/+$/, "");
 }
 
+function normalizeBaseUrl(input) {
+  const trimmed = trimTrailingSlash(input);
+  return trimmed.endsWith("/v1") ? trimmed.slice(0, -3) : trimmed;
+}
+
+function maskSecret(value) {
+  const trimmed = String(value ?? "").trim();
+  if (!trimmed) {
+    return "";
+  }
+  if (trimmed.length <= 8) {
+    return "********";
+  }
+  return `${trimmed.slice(0, 3)}********${trimmed.slice(-4)}`;
+}
+
+function readUrlsFromFile(path) {
+  const raw = fs.readFileSync(path, "utf8");
+  return raw
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0 && !line.startsWith("#"));
+}
+
 async function requestJson(url, init) {
   const response = await fetch(url, init);
   const text = await response.text();
@@ -108,53 +144,25 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function main() {
-  const args = parseArgs(process.argv.slice(2));
-  if (args.help) {
-    usage();
-    return;
-  }
-
-  const token = (args.token ?? process.env.API_TOKEN ?? "").trim();
-  if (!token) {
-    console.error("Missing token. Use --token <token> or set API_TOKEN.");
-    usage();
-    process.exit(1);
-  }
-  const notionToken = (args.notionToken ?? "").trim();
-  if (!notionToken) {
-    console.error("Missing notion token. Use --notion-token <token>.");
-    usage();
-    process.exit(1);
-  }
-
-  const baseUrl = trimTrailingSlash(
-    (args.baseUrl ?? process.env.API_BASE_URL ?? DEFAULT_BASE_URL).trim()
-  );
-  const sourceUrl = (args.sourceUrl ?? DEFAULT_SOURCE_URL).trim();
-  const clientItemId = (args.clientItemId ?? `online-test-${Date.now()}`).trim();
-
-  if (!Number.isFinite(args.timeoutSec) || args.timeoutSec <= 0) {
-    throw new Error("--timeout-sec must be a positive integer.");
-  }
-  if (!Number.isFinite(args.intervalMs) || args.intervalMs <= 0) {
-    throw new Error("--interval-ms must be a positive integer.");
-  }
-
-  const ingestUrl = `${baseUrl}/v1/ingest`;
+async function runOne(input) {
+  const ingestUrl = `${input.baseUrl}/v1/ingest`;
   const ingestPayload = {
-    client_item_id: clientItemId,
-    source_url: sourceUrl,
-    raw_text: sourceUrl,
-    notion_api_token: notionToken
+    client_item_id: input.clientItemId,
+    source_url: input.sourceUrl,
+    raw_text: input.sourceUrl,
+    notion_api_token: input.notionToken
+  };
+  const safePayload = {
+    ...ingestPayload,
+    notion_api_token: maskSecret(ingestPayload.notion_api_token)
   };
 
   console.log(`[submit] POST ${ingestUrl}`);
-  console.log(`[submit] payload: ${JSON.stringify(ingestPayload)}`);
+  console.log(`[submit] payload: ${JSON.stringify(safePayload)}`);
   const ingest = await requestJson(ingestUrl, {
     method: "POST",
     headers: {
-      authorization: `Bearer ${token}`,
+      authorization: `Bearer ${input.token}`,
       "content-type": "application/json"
     },
     body: JSON.stringify(ingestPayload)
@@ -164,30 +172,25 @@ async function main() {
   console.log(`[submit] response: ${JSON.stringify(ingest.body, null, 2)}`);
 
   if (!ingest.response.ok) {
-    process.exit(1);
-  }
-
-  if (args.noPoll) {
-    return;
+    return { ok: false, itemId: null, status: null, body: ingest.body };
   }
 
   const itemId =
     ingest.body && typeof ingest.body === "object" && typeof ingest.body.item_id === "string"
       ? ingest.body.item_id
       : null;
-  if (!itemId) {
-    console.log("[poll] skip: item_id not found in response.");
-    return;
+  if (!itemId || input.noPoll) {
+    return { ok: true, itemId, status: null, body: ingest.body };
   }
 
-  const deadline = Date.now() + args.timeoutSec * 1000;
-  const getItemUrl = `${baseUrl}/v1/items/${encodeURIComponent(itemId)}`;
+  const deadline = Date.now() + input.timeoutSec * 1000;
+  const getItemUrl = `${input.baseUrl}/v1/items/${encodeURIComponent(itemId)}`;
   while (Date.now() < deadline) {
-    await sleep(args.intervalMs);
+    await sleep(input.intervalMs);
     const itemResp = await requestJson(getItemUrl, {
       method: "GET",
       headers: {
-        authorization: `Bearer ${token}`
+        authorization: `Bearer ${input.token}`
       }
     });
 
@@ -203,12 +206,102 @@ async function main() {
 
     if (itemResp.response.ok && status && isFinalStatus(status)) {
       console.log(`[poll] final: ${JSON.stringify(item, null, 2)}`);
-      return;
+      return { ok: true, itemId, status, body: itemResp.body };
     }
   }
 
   console.log("[poll] timeout reached.");
-  process.exit(2);
+  return { ok: false, itemId, status: "TIMEOUT", body: null };
+}
+
+async function main() {
+  const args = parseArgs(process.argv.slice(2));
+  if (args.help) {
+    usage();
+    return;
+  }
+
+  const token = (args.token ?? process.env.API_TOKEN ?? "").trim();
+  if (!token) {
+    console.error("Missing token. Use --token <token> or set API_TOKEN.");
+    usage();
+    process.exit(1);
+  }
+  const notionToken = (args.notionToken ?? process.env.NOTION_API_TOKEN ?? "").trim();
+  if (!notionToken) {
+    console.error("Missing notion token. Use --notion-token <token> or set NOTION_API_TOKEN.");
+    usage();
+    process.exit(1);
+  }
+
+  const baseUrlInput = (args.baseUrl ?? process.env.API_BASE_URL ?? DEFAULT_BASE_URL).trim();
+  const baseUrl = normalizeBaseUrl(baseUrlInput);
+  if (/^https?:\/\/api\.notion\.com\b/i.test(baseUrl)) {
+    console.error("API_BASE_URL should point to your toNotionAPI service, not https://api.notion.com.");
+    console.error("Example: API_BASE_URL=https://your-worker.example.com");
+    process.exit(1);
+  }
+
+  if (!Number.isFinite(args.timeoutSec) || args.timeoutSec <= 0) {
+    throw new Error("--timeout-sec must be a positive integer.");
+  }
+  if (!Number.isFinite(args.intervalMs) || args.intervalMs <= 0) {
+    throw new Error("--interval-ms must be a positive integer.");
+  }
+
+  let sourceUrls = [...args.sourceUrls];
+  if (args.sourceFile) {
+    sourceUrls.push(...readUrlsFromFile(args.sourceFile));
+  }
+  sourceUrls = sourceUrls.map((value) => value.trim()).filter((value) => value.length > 0);
+  if (sourceUrls.length === 0) {
+    sourceUrls = [DEFAULT_SOURCE_URL];
+  }
+
+  const results = [];
+  for (let index = 0; index < sourceUrls.length; index += 1) {
+    const sourceUrl = sourceUrls[index];
+    const clientItemIdBase = (args.clientItemId ?? `online-test-${Date.now()}`).trim();
+    const clientItemId =
+      sourceUrls.length === 1 ? clientItemIdBase : `${clientItemIdBase}-${index + 1}`;
+
+    console.log(`\n=== [${index + 1}/${sourceUrls.length}] ${sourceUrl} ===`);
+    const result = await runOne({
+      baseUrl,
+      token,
+      notionToken,
+      sourceUrl,
+      clientItemId,
+      timeoutSec: args.timeoutSec,
+      intervalMs: args.intervalMs,
+      noPoll: args.noPoll
+    });
+    results.push({ sourceUrl, clientItemId, ...result });
+  }
+
+  const finalFailed = results.filter((item) => {
+    if (!item.ok) {
+      return true;
+    }
+    if (args.noPoll) {
+      return false;
+    }
+    return item.status !== "SYNCED";
+  });
+  const okCount = results.length - finalFailed.length;
+  console.log(
+    `\n[summary] total=${results.length} ok=${okCount} failed=${finalFailed.length}`
+  );
+  for (const item of results) {
+    const finalOk = item.ok && (args.noPoll || item.status === "SYNCED");
+    const statusText = item.status ? ` status=${item.status}` : "";
+    const itemText = item.itemId ? ` item_id=${item.itemId}` : "";
+    console.log(`[summary] ok=${finalOk} url=${item.sourceUrl}${itemText}${statusText}`);
+  }
+
+  if (finalFailed.length > 0) {
+    process.exit(finalFailed.some((item) => item.status === "TIMEOUT") ? 2 : 1);
+  }
 }
 
 main().catch((error) => {

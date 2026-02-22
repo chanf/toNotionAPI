@@ -536,6 +536,17 @@ npm run ingest:online -- \
   --notion-token "<NOTION_API_TOKEN>"
 ```
 
+批量测试（读取文件，一行一个 URL；或重复传 `--source-url`）：
+
+```bash
+API_TOKEN="<API_TOKEN>" \
+API_BASE_URL="https://your-worker.example.com" \
+npm run ingest:online -- \
+  --source-file "test/fixtures/wechat_urls.txt" \
+  --notion-token "<NOTION_API_TOKEN>" \
+  --timeout-sec 300
+```
+
 ## Cloudflare 部署（Workers + D1）
 
 ### 1) 前置条件
