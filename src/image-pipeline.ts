@@ -23,7 +23,11 @@ type DownloadedImage = {
 
 const DEFAULT_MAX_IMAGE_COUNT = 30;
 const DEFAULT_MAX_IMAGE_BYTES = 20 * 1024 * 1024;
+const DEFAULT_TIME_BUDGET_MS = 25_000;
 const IMAGE_FETCH_TIMEOUT_MS = 15_000;
+const NOTION_CREATE_TIMEOUT_MS = 15_000;
+const NOTION_SEND_TIMEOUT_MS = 30_000;
+const NOTION_THROTTLE_MS = 350;
 const WECHAT_IMAGE_USER_AGENT =
   "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile Safari/604.1";
 
@@ -182,6 +186,10 @@ function filenameFromUrl(url: string): string {
   return "wechat-image";
 }
 
+async function sleep(ms: number): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 async function readBodyWithLimit(response: Response, maxBytes: number): Promise<Uint8Array> {
   const contentLength = response.headers.get("content-length");
   if (contentLength) {
@@ -222,6 +230,19 @@ async function readBodyWithLimit(response: Response, maxBytes: number): Promise<
     offset += chunk.byteLength;
   }
   return merged;
+}
+
+async function fetchWithTimeout(input: string, init: RequestInit, timeoutMs: number): Promise<Response> {
+  const abortController = new AbortController();
+  const timeout = setTimeout(() => abortController.abort(), timeoutMs);
+  try {
+    return await fetch(input, {
+      ...init,
+      signal: abortController.signal
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 async function downloadWeChatImage(input: {
@@ -310,18 +331,22 @@ async function createNotionFileUpload(runtime: NotionUploadRuntime, metadata: {
   filename: string;
   contentType: string;
 }): Promise<{ id: string }> {
-  const response = await fetch(`${runtime.apiBaseUrl}/file_uploads`, {
-    method: "POST",
-    headers: {
-      ...notionAuthHeaders(runtime),
-      "content-type": "application/json"
+  const response = await fetchWithTimeout(
+    `${runtime.apiBaseUrl}/file_uploads`,
+    {
+      method: "POST",
+      headers: {
+        ...notionAuthHeaders(runtime),
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({
+        mode: "single_part",
+        filename: metadata.filename,
+        content_type: metadata.contentType
+      })
     },
-    body: JSON.stringify({
-      mode: "single_part",
-      filename: metadata.filename,
-      content_type: metadata.contentType
-    })
-  });
+    NOTION_CREATE_TIMEOUT_MS
+  );
   if (!response.ok) {
     const detail = await parseNotionApiErrorMessage(response);
     throw new NotionFileUploadError(
@@ -350,13 +375,17 @@ async function sendNotionFileUpload(runtime: NotionUploadRuntime, input: {
   const blob = new Blob([safeBytes], { type: input.contentType });
   form.append("file", blob, input.filename);
 
-  const response = await fetch(`${runtime.apiBaseUrl}/file_uploads/${input.fileUploadId}/send`, {
-    method: "POST",
-    headers: {
-      ...notionAuthHeaders(runtime)
+  const response = await fetchWithTimeout(
+    `${runtime.apiBaseUrl}/file_uploads/${input.fileUploadId}/send`,
+    {
+      method: "POST",
+      headers: {
+        ...notionAuthHeaders(runtime)
+      },
+      body: form
     },
-    body: form
-  });
+    NOTION_SEND_TIMEOUT_MS
+  );
   if (!response.ok) {
     const detail = await parseNotionApiErrorMessage(response);
     throw new NotionFileUploadError(
@@ -424,6 +453,7 @@ export async function buildNotionImageAppendBlocksFromHtml(input: {
   logger?: Logger;
   maxCount?: number;
   maxBytes?: number;
+  timeBudgetMs?: number;
 }): Promise<NotionBlock[]> {
   if (!input.contentHtml) {
     return [];
@@ -431,6 +461,17 @@ export async function buildNotionImageAppendBlocksFromHtml(input: {
 
   const maxCount = input.maxCount ?? DEFAULT_MAX_IMAGE_COUNT;
   const maxBytes = input.maxBytes ?? DEFAULT_MAX_IMAGE_BYTES;
+  const deadline = Date.now() + (input.timeBudgetMs ?? DEFAULT_TIME_BUDGET_MS);
+  let nextNotionAllowedAt = 0;
+
+  async function throttleNotion(): Promise<void> {
+    const now = Date.now();
+    if (now < nextNotionAllowedAt) {
+      await sleep(nextNotionAllowedAt - now);
+    }
+    nextNotionAllowedAt = Date.now() + NOTION_THROTTLE_MS;
+  }
+
   const images = extractWeChatImagesFromHtml({
     contentHtml: input.contentHtml,
     baseUrl: input.baseUrl,
@@ -449,6 +490,13 @@ export async function buildNotionImageAppendBlocksFromHtml(input: {
   let succeeded = 0;
 
   for (const image of images) {
+    if (Date.now() > deadline) {
+      input.logger?.warn("image.process.time_budget_exceeded", {
+        succeeded,
+        total: images.length
+      });
+      break;
+    }
     const trace = {
       image_index: image.index
     };
@@ -469,7 +517,19 @@ export async function buildNotionImageAppendBlocksFromHtml(input: {
         ...trace,
         image_url: image.sourceUrl
       });
-      const fileUploadId = await uploadImageToNotion(input.runtime, downloaded);
+      await throttleNotion();
+      const created = await createNotionFileUpload(input.runtime, {
+        filename: downloaded.filename,
+        contentType: downloaded.contentType
+      });
+      await throttleNotion();
+      await sendNotionFileUpload(input.runtime, {
+        fileUploadId: created.id,
+        bytes: downloaded.bytes,
+        contentType: downloaded.contentType,
+        filename: downloaded.filename
+      });
+      const fileUploadId = created.id;
       input.logger?.info("image.upload.notion_send.succeeded", {
         ...trace,
         image_url: image.sourceUrl,

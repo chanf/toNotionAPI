@@ -320,6 +320,7 @@ async function main() {
       clientItemId,
       timeoutSec: args.timeoutSec,
       intervalMs: args.intervalMs,
+      retryOnDuplicate: args.retryOnDuplicate,
       noPoll: args.noPoll
     });
     results.push({ sourceUrl, clientItemId, ...result });

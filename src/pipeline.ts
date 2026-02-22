@@ -9,6 +9,7 @@ const DEFAULT_NOTION_API_BASE_URL = "https://api.notion.com/v1";
 const DEFAULT_NOTION_API_VERSION = "2025-09-03";
 const NOTION_TITLE_MAX_LENGTH = 200;
 const NOTION_MAX_CHILDREN_PER_REQUEST = 100;
+const NOTION_FETCH_TIMEOUT_MS = 15_000;
 
 class NotionSyncError extends Error {
   constructor(
@@ -36,6 +37,24 @@ type ResolvedNotionRuntime = {
 
 async function sleep(ms: number): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function fetchWithTimeout(input: string, init: RequestInit, timeoutMs: number): Promise<Response> {
+  const abortController = new AbortController();
+  const timeout = setTimeout(() => abortController.abort(), timeoutMs);
+  try {
+    return await fetch(input, {
+      ...init,
+      signal: abortController.signal
+    });
+  } catch (error) {
+    if (error instanceof Error && error.name === "AbortError") {
+      throw new NotionSyncError("NOTION_TIMEOUT", "Notion request timed out.", true);
+    }
+    throw new NotionSyncError("NOTION_FETCH_FAILED", "Failed to call Notion API.", true);
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 function truncateText(value: string, maxLength: number): string {
@@ -152,10 +171,14 @@ function chunkArray<T>(input: T[], size: number): T[][] {
 }
 
 async function ensureNotionPageTarget(targetId: string, runtime: ResolvedNotionRuntime): Promise<void> {
-  const response = await fetch(`${runtime.apiBaseUrl}/pages/${targetId}`, {
-    method: "GET",
-    headers: notionHeaders(runtime)
-  });
+  const response = await fetchWithTimeout(
+    `${runtime.apiBaseUrl}/pages/${targetId}`,
+    {
+      method: "GET",
+      headers: notionHeaders(runtime)
+    },
+    NOTION_FETCH_TIMEOUT_MS
+  );
   if (!response.ok) {
     const detail = await parseNotionErrorMessage(response);
     throw mapNotionHttpError(response.status, detail);
@@ -173,13 +196,17 @@ async function appendNotionChildren(input: {
 
   const chunks = chunkArray(input.children, NOTION_MAX_CHILDREN_PER_REQUEST);
   for (const chunk of chunks) {
-    const response = await fetch(`${input.runtime.apiBaseUrl}/blocks/${input.pageId}/children`, {
-      method: "PATCH",
-      headers: notionHeaders(input.runtime),
-      body: JSON.stringify({
-        children: chunk
-      })
-    });
+    const response = await fetchWithTimeout(
+      `${input.runtime.apiBaseUrl}/blocks/${input.pageId}/children`,
+      {
+        method: "PATCH",
+        headers: notionHeaders(input.runtime),
+        body: JSON.stringify({
+          children: chunk
+        })
+      },
+      NOTION_FETCH_TIMEOUT_MS
+    );
     if (!response.ok) {
       const detail = await parseNotionErrorMessage(response);
       throw mapNotionHttpError(response.status, detail);
@@ -241,19 +268,23 @@ async function syncToNotion(input: {
   const firstBatch = children.slice(0, NOTION_MAX_CHILDREN_PER_REQUEST);
   const remain = children.slice(NOTION_MAX_CHILDREN_PER_REQUEST);
 
-  const response = await fetch(`${runtime.apiBaseUrl}/pages`, {
-    method: "POST",
-    headers: notionHeaders(runtime),
-    body: JSON.stringify(
-      buildNotionPagePayload({
-        parent: {
-          page_id: input.settings.target_page_id
-        },
-        title: input.article.title,
-        children: firstBatch
-      })
-    )
-  });
+  const response = await fetchWithTimeout(
+    `${runtime.apiBaseUrl}/pages`,
+    {
+      method: "POST",
+      headers: notionHeaders(runtime),
+      body: JSON.stringify(
+        buildNotionPagePayload({
+          parent: {
+            page_id: input.settings.target_page_id
+          },
+          title: input.article.title,
+          children: firstBatch
+        })
+      )
+    },
+    NOTION_FETCH_TIMEOUT_MS
+  );
 
   if (!response.ok) {
     const detail = await parseNotionErrorMessage(response);
