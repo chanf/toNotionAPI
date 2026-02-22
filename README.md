@@ -2,6 +2,11 @@
 
 独立后端项目：Node.js (TypeScript) + Cloudflare Workers + D1。
 
+## 项目角色
+
+- 产品经理：feng
+- 程序员：CodeX
+
 ## 独立仓库说明
 
 当前目录就是后端独立仓库根目录（不是单仓中的 `backend/` 子目录）。
