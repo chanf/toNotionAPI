@@ -18,6 +18,7 @@ Optional flags:
   --client-item-id <id>    Custom client item id
   --timeout-sec <n>        Poll timeout in seconds (default: ${DEFAULT_POLL_TIMEOUT_SEC})
   --interval-ms <n>        Poll interval in ms (default: ${DEFAULT_POLL_INTERVAL_MS})
+  --retry-on-duplicate     If ingest returns duplicated item, call /v1/items/{id}/retry to force re-processing
   --no-poll                Submit only, no polling
   -h, --help               Show this message
 `);
@@ -33,6 +34,7 @@ function parseArgs(argv) {
     clientItemId: null,
     timeoutSec: DEFAULT_POLL_TIMEOUT_SEC,
     intervalMs: DEFAULT_POLL_INTERVAL_MS,
+    retryOnDuplicate: false,
     noPoll: false,
     help: false
   };
@@ -45,6 +47,10 @@ function parseArgs(argv) {
     }
     if (arg === "--no-poll") {
       parsed.noPoll = true;
+      continue;
+    }
+    if (arg === "--retry-on-duplicate") {
+      parsed.retryOnDuplicate = true;
       continue;
     }
     if (arg === "--base-url") {
@@ -144,6 +150,13 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function isDuplicatedIngestResponse(body) {
+  if (!body || typeof body !== "object") {
+    return false;
+  }
+  return typeof body.duplicated_from_item_id === "string" && body.duplicated_from_item_id.length > 0;
+}
+
 async function runOne(input) {
   const ingestUrl = `${input.baseUrl}/v1/ingest`;
   const ingestPayload = {
@@ -173,6 +186,39 @@ async function runOne(input) {
 
   if (!ingest.response.ok) {
     return { ok: false, itemId: null, status: null, body: ingest.body };
+  }
+
+  if (input.retryOnDuplicate && isDuplicatedIngestResponse(ingest.body)) {
+    const itemIdFromIngest =
+      ingest.body && typeof ingest.body === "object" && typeof ingest.body.item_id === "string"
+        ? ingest.body.item_id
+        : null;
+    if (itemIdFromIngest) {
+      const retryUrl = `${input.baseUrl}/v1/items/${encodeURIComponent(itemIdFromIngest)}/retry`;
+      const retryPayload = {
+        notion_api_token: input.notionToken
+      };
+      const safeRetryPayload = {
+        ...retryPayload,
+        notion_api_token: maskSecret(retryPayload.notion_api_token)
+      };
+      console.log(`[retry] duplicated item detected, force re-processing via /retry`);
+      console.log(`[retry] POST ${retryUrl}`);
+      console.log(`[retry] payload: ${JSON.stringify(safeRetryPayload)}`);
+      const retry = await requestJson(retryUrl, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${input.token}`,
+          "content-type": "application/json"
+        },
+        body: JSON.stringify(retryPayload)
+      });
+      console.log(`[retry] status: ${retry.response.status}`);
+      console.log(`[retry] response: ${JSON.stringify(retry.body, null, 2)}`);
+      if (!retry.response.ok) {
+        return { ok: false, itemId: itemIdFromIngest, status: null, body: retry.body };
+      }
+    }
   }
 
   const itemId =

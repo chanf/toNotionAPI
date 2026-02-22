@@ -371,7 +371,8 @@ curl -X PUT "https://your-worker.example.com/v1/me/notion-target" \
 说明：
 
 - 若请求里提供 `raw_text` 且它不是 URL，会作为本地兜底正文（便于离线测试）。
-- 当前为了优先保障链路稳定，图片会被忽略，不写入 Notion。
+- 图片会在页面创建后进行追加：从正文 HTML 提取图片（优先 `data-src`），下载后通过 Notion `file_uploads` 上传，并以 `image(file_upload)` block 追加到页面末尾“图片”分区。
+- 限制：仅处理 `*.qpic.cn`/`*.qlogo.cn` 图片；单篇最多 30 张；单图最大 20MB；单图失败不会阻塞整篇同步（详情见日志）。
 - Notion 单次 append children 有 100 条限制，服务端会自动分批追加。
 - Notion `rich_text.text.content` 有长度限制，服务端会自动分段截断，避免超限报错。
 
@@ -536,6 +537,11 @@ npm run ingest:online -- \
   --notion-token "<NOTION_API_TOKEN>"
 ```
 
+说明：
+
+- `POST /v1/ingest` 会按 `user_id + normalized_url` 去重；重复提交同一篇 URL 会返回 `duplicated_from_item_id`，且不会再次触发同步任务。
+- 如需“强制重新同步”（例如验证新版本能力），可调用 `POST /v1/items/{itemId}/retry`，或在 CLI 工具中加 `--retry-on-duplicate` 自动触发重试。
+
 批量测试（读取文件，一行一个 URL；或重复传 `--source-url`）：
 
 ```bash
@@ -544,6 +550,7 @@ API_BASE_URL="https://your-worker.example.com" \
 npm run ingest:online -- \
   --source-file "test/fixtures/wechat_urls.txt" \
   --notion-token "<NOTION_API_TOKEN>" \
+  --retry-on-duplicate \
   --timeout-sec 300
 ```
 

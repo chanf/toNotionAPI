@@ -3,6 +3,10 @@
 更新日期：2026-02-22  
 适用范围：`toNotionAPI`（Cloudflare Worker + D1）
 
+实现状态（截至 2026-02-22）：
+- P0 已实现：图片集中追加 + Notion file_upload（失败隔离）。
+- 代码入口：`src/image-pipeline.ts`（提取/下载/上传/生成 blocks），`src/pipeline.ts`（在 page 创建后追加图片分区）。
+
 ## 1. 背景与目标
 
 当前主链路已实现“公众号文章 -> Markdown/Blocks -> Notion Page”，但图片被显式忽略：
@@ -241,4 +245,3 @@ P1（体验完善，保持顺序/位置）：
 1. P0：图片集中追加 + Notion file_upload（含降级策略）  
 2. P1：按原位置插入图片（HTML/Markdown/token 化改造）  
 3. P2：D1 资产缓存与幂等复用（减少重复下载/上传，提升 retry 体验）
-

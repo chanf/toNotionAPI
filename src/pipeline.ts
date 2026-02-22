@@ -2,6 +2,7 @@ import { createLogger, serializeError, type Logger } from "./logger";
 import { buildNotionChildrenBlocks } from "./notion-blocks";
 import type { Store } from "./store";
 import { ParserError, parseWeChatArticle, type ParsedArticle } from "./article-parser";
+import { buildNotionImageAppendBlocksFromHtml } from "./image-pipeline";
 import { nowIso, randomId } from "./utils";
 
 const DEFAULT_NOTION_API_BASE_URL = "https://api.notion.com/v1";
@@ -191,6 +192,7 @@ async function syncToNotion(input: {
   settings: { notion_connected: boolean; target_page_id: string | null };
   article: ParsedArticle;
   runtime: NotionRuntimeInput | undefined;
+  logger?: Logger;
 }): Promise<{ notionPageId: string; notionPageUrl: string }> {
   const runtime = normalizeNotionRuntime(input.runtime);
   if (!input.settings.notion_connected) {
@@ -274,6 +276,34 @@ async function syncToNotion(input: {
       pageId,
       children: remain,
       runtime
+    });
+  }
+
+  try {
+    const imageBlocks = await buildNotionImageAppendBlocksFromHtml({
+      contentHtml: input.article.contentHtml,
+      baseUrl: new URL(input.normalizedUrl),
+      articleUrl: input.normalizedUrl,
+      runtime: {
+        apiToken: runtime.apiToken,
+        apiVersion: runtime.apiVersion,
+        apiBaseUrl: runtime.apiBaseUrl
+      },
+      logger: input.logger
+    });
+    if (imageBlocks.length > 0) {
+      await appendNotionChildren({
+        pageId,
+        children: imageBlocks,
+        runtime
+      });
+      input.logger?.info("image.block.appended", {
+        count: imageBlocks.length
+      });
+    }
+  } catch (error) {
+    input.logger?.warn("image.pipeline.failed", {
+      error: serializeError(error)
     });
   }
 
@@ -390,7 +420,8 @@ export async function processItem(
       normalizedUrl: syncingItem.normalized_url,
       settings,
       article: parsedArticle,
-      runtime: input.notion
+      runtime: input.notion,
+      logger
     });
     await store.patchItem({
       userId: input.userId,
