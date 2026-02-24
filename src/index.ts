@@ -1,4 +1,5 @@
 import type { D1Database } from "./d1";
+import { classifyParserByUrl } from "./article-parser";
 import { createLogger, serializeError, type Logger } from "./logger";
 import { OPENAPI_YAML } from "./openapi";
 import { processItem, type NotionRuntimeInput } from "./pipeline";
@@ -2610,6 +2611,16 @@ export function createApp(options?: { store?: Store }) {
     }
     const clientItemId = payload.client_item_id;
     const sourceUrl = payload.source_url;
+    let parsedSourceUrl: URL;
+    try {
+      parsedSourceUrl = new URL(sourceUrl);
+    } catch {
+      return errorResponse(400, "BAD_REQUEST", "source_url must be a valid URL.");
+    }
+    if (parsedSourceUrl.protocol !== "http:" && parsedSourceUrl.protocol !== "https:") {
+      return errorResponse(400, "BAD_REQUEST", "source_url must be an http(s) URL.");
+    }
+    const sourceType = classifyParserByUrl(parsedSourceUrl).parser;
     const notionRuntime = resolveNotionRuntimeFromRequest(env, payload);
     if (!notionRuntime.mock && !notionRuntime.apiToken) {
       return errorResponse(400, "BAD_REQUEST", "notion_api_token is required when NOTION_MOCK is disabled.");
@@ -2621,7 +2632,7 @@ export function createApp(options?: { store?: Store }) {
         clientItemId,
         sourceUrl,
         rawText: typeof payload.raw_text === "string" ? payload.raw_text : null,
-        sourceType: "wechat_mp"
+        sourceType
       });
 
       if (!result.duplicated) {

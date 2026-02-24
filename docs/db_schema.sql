@@ -68,7 +68,7 @@ CREATE TABLE article_items (
   client_item_id TEXT,
   source_url TEXT NOT NULL,
   normalized_url TEXT NOT NULL,
-  source_type TEXT NOT NULL CHECK (source_type IN ('wechat_mp')),
+  source_type TEXT NOT NULL CHECK (source_type IN ('wechat_mp', 'generic_web')),
   raw_text TEXT,
 
   -- parsed metadata

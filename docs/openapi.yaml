@@ -3,7 +3,7 @@ info:
   title: toNotion API
   version: 0.2.0
   description: |
-    API for ingesting WeChat article links, parsing content, and syncing to Notion.
+    API for ingesting URLs (WeChat MP + generic web), parsing content, and syncing to Notion.
 servers:
   - url: /
     description: Current deployment
@@ -117,7 +117,7 @@ paths:
   /v1/ingest:
     post:
       tags: [Ingest]
-      summary: Ingest WeChat article URL
+      summary: Ingest article URL
       operationId: ingestItem
       security:
         - bearerAuth: []
@@ -1020,7 +1020,7 @@ components:
           type: string
         source_type:
           type: string
-          enum: [wechat_mp]
+          enum: [wechat_mp, generic_web]
         raw_text:
           type: string
           nullable: true
@@ -1079,7 +1079,8 @@ components:
           nullable: true
         source_type:
           type: string
-          enum: [wechat_mp]
+          enum: [wechat_mp, generic_web]
+          description: Optional. Server will auto-detect parser by source_url host/primary domain; this field is ignored if provided.
 
     IngestResponse:
       type: object

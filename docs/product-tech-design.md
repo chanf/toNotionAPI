@@ -96,7 +96,7 @@
 - `article_items`
   - `id`（UUID）
   - `source_url`（唯一索引）
-  - `source_type`（wechat_mp）
+  - `source_type`（wechat_mp / generic_web）
   - `title` / `summary` / `cover_url`
   - `content_plaintext`（可空）
   - `status`

@@ -8,6 +8,7 @@ import type {
   ArticleItem,
   ItemStatus,
   OAuthState,
+  SourceType,
   SyncError,
   UserNotionCredential,
   UserNotionCredentialSecret,
@@ -23,7 +24,7 @@ type ArticleRow = {
   client_item_id: string;
   source_url: string;
   normalized_url: string;
-  source_type: "wechat_mp";
+  source_type: SourceType;
   raw_text: string | null;
   title: string | null;
   summary: string | null;
@@ -280,7 +281,7 @@ export interface Store {
     clientItemId: string;
     sourceUrl: string;
     rawText: string | null;
-    sourceType: "wechat_mp";
+    sourceType: SourceType;
   }): Promise<{ item: ArticleItem; duplicated: boolean }>;
   listItems(input: {
     userId: string;
@@ -486,7 +487,7 @@ export class InMemoryStore implements Store {
     clientItemId: string;
     sourceUrl: string;
     rawText: string | null;
-    sourceType: "wechat_mp";
+    sourceType: SourceType;
   }): Promise<{ item: ArticleItem; duplicated: boolean }> {
     const normalizedUrl = normalizeUrl(input.sourceUrl);
     const key = this.getUrlIndexKey(input.userId, normalizedUrl);
@@ -965,7 +966,7 @@ export class D1Store implements Store {
     clientItemId: string;
     sourceUrl: string;
     rawText: string | null;
-    sourceType: "wechat_mp";
+    sourceType: SourceType;
   }): Promise<{ item: ArticleItem; duplicated: boolean }> {
     const normalizedUrl = normalizeUrl(input.sourceUrl);
     const existing = await this.getItemByNormalizedUrl(input.userId, normalizedUrl);

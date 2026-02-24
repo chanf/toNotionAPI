@@ -2,6 +2,8 @@ const SUMMARY_MAX_LENGTH = 120;
 const FETCH_TIMEOUT_MS = 15_000;
 const WECHAT_CONTENT_ID = "js_content";
 
+export type ParserId = "wechat_mp" | "generic_web";
+
 export class ParserError extends Error {
   constructor(
     readonly code: string,
@@ -165,6 +167,32 @@ function parseTitleFromUrl(url: URL): string | null {
   return url.searchParams.get("title");
 }
 
+function primaryDomainFromHostname(hostname: string): string {
+  const normalized = hostname.trim().toLowerCase();
+  if (!normalized) {
+    return "";
+  }
+  // Special-case WeChat: mp.weixin.qq.com -> weixin.qq.com (avoid overly-broad qq.com).
+  if (normalized.endsWith(".weixin.qq.com")) {
+    return "weixin.qq.com";
+  }
+  const parts = normalized.split(".").filter(Boolean);
+  if (parts.length <= 2) {
+    return normalized;
+  }
+  // Heuristic: eTLD+1 (without PSL). Good enough for routing, not for security.
+  return parts.slice(-2).join(".");
+}
+
+export function classifyParserByUrl(url: URL): { parser: ParserId; primaryDomain: string; hostname: string } {
+  const hostname = url.hostname.trim().toLowerCase();
+  const primaryDomain = primaryDomainFromHostname(hostname);
+  if (hostname === "mp.weixin.qq.com" || primaryDomain === "weixin.qq.com") {
+    return { parser: "wechat_mp", primaryDomain, hostname };
+  }
+  return { parser: "generic_web", primaryDomain, hostname };
+}
+
 function isHttpUrl(value: string): boolean {
   try {
     const url = new URL(value);
@@ -243,6 +271,40 @@ export function extractElementById(html: string, elementId: string): string | nu
   const tagName = startMatch[1].toLowerCase();
   const contentStart = startMatch.index + startMatch[0].length;
   const tagPattern = new RegExp(`<\\/?${escapeRegExp(tagName)}\\b[^>]*>`, "gi");
+  tagPattern.lastIndex = contentStart;
+
+  let depth = 1;
+  let match: RegExpExecArray | null = tagPattern.exec(html);
+  while (match) {
+    const token = match[0];
+    const isClosing = token.startsWith("</");
+    const isSelfClosing = /\/>$/.test(token);
+    if (isClosing) {
+      depth -= 1;
+    } else if (!isSelfClosing) {
+      depth += 1;
+    }
+    if (depth === 0) {
+      return html.slice(contentStart, match.index);
+    }
+    match = tagPattern.exec(html);
+  }
+  return null;
+}
+
+function extractFirstElementByTagName(html: string, tagName: string): string | null {
+  const normalizedTag = tagName.trim().toLowerCase();
+  if (!normalizedTag) {
+    return null;
+  }
+  const startTagPattern = new RegExp(`<${escapeRegExp(normalizedTag)}\\b[^>]*>`, "i");
+  const startMatch = startTagPattern.exec(html);
+  if (!startMatch) {
+    return null;
+  }
+
+  const contentStart = startMatch.index + startMatch[0].length;
+  const tagPattern = new RegExp(`<\\/?${escapeRegExp(normalizedTag)}\\b[^>]*>`, "gi");
   tagPattern.lastIndex = contentStart;
 
   let depth = 1;
@@ -353,6 +415,119 @@ export function markdownToPlainText(markdown: string): string {
   return normalizeText(lines.join("\n"));
 }
 
+async function fetchGenericHtml(sourceUrl: string): Promise<string> {
+  const abortController = new AbortController();
+  const timeout = setTimeout(() => abortController.abort(), FETCH_TIMEOUT_MS);
+  try {
+    const parsed = new URL(sourceUrl);
+    const response = await fetch(sourceUrl, {
+      method: "GET",
+      redirect: "follow",
+      signal: abortController.signal,
+      headers: {
+        accept: "text/html,application/xhtml+xml",
+        "accept-language": "zh-CN,zh;q=0.9,en;q=0.8",
+        referer: parsed.origin,
+        "user-agent":
+          "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile Safari/604.1"
+      }
+    });
+    if (!response.ok) {
+      const retriable = response.status >= 500 || response.status === 429;
+      throw new ParserError(
+        "PARSE_FETCH_FAILED",
+        `Failed to fetch page content from source URL (status ${response.status}).`,
+        retriable
+      );
+    }
+    const html = await response.text();
+    if (!html || html.trim().length < 100) {
+      throw new ParserError("PARSE_CONTENT_EMPTY", "Fetched page content is empty.", true);
+    }
+    return html;
+  } catch (error) {
+    if (error instanceof ParserError) {
+      throw error;
+    }
+    if (error instanceof Error && error.name === "AbortError") {
+      throw new ParserError("PARSE_TIMEOUT", "Fetching page content timed out.", true);
+    }
+    throw new ParserError("PARSE_FETCH_FAILED", "Failed to fetch page content from source URL.", true);
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function parseGenericWebArticle(sourceUrl: string, rawText: string | null): Promise<ParsedArticle> {
+  let parsedUrl: URL;
+  try {
+    parsedUrl = new URL(sourceUrl);
+  } catch {
+    throw new ParserError("PARSE_INVALID_URL", "Source URL is invalid.", false);
+  }
+  if (parsedUrl.protocol !== "http:" && parsedUrl.protocol !== "https:") {
+    throw new ParserError("PARSE_INVALID_URL", "Source URL must be http(s).", false);
+  }
+
+  if (shouldUseRawText(rawText, sourceUrl)) {
+    const content = normalizeText(rawText);
+    const title = parseTitleFromUrl(parsedUrl) ?? `Web Page - ${parsedUrl.hostname}`;
+    const summary = truncateText(content || sourceUrl, SUMMARY_MAX_LENGTH);
+    return {
+      title,
+      summary,
+      coverUrl: null,
+      contentPlaintext: content,
+      contentMarkdown: content,
+      contentHtml: null
+    };
+  }
+
+  const html = await fetchGenericHtml(sourceUrl);
+  const title =
+    extractMetaContent(html, "property", "og:title") ??
+    extractMetaContent(html, "name", "twitter:title") ??
+    extractTitleTag(html) ??
+    parseTitleFromUrl(parsedUrl) ??
+    `Web Page - ${parsedUrl.hostname}`;
+
+  const coverUrlRaw =
+    extractMetaContent(html, "property", "og:image") ??
+    extractMetaContent(html, "name", "twitter:image") ??
+    null;
+  const coverUrl = coverUrlRaw ? toAbsoluteHttpUrl(coverUrlRaw, parsedUrl) : null;
+
+  const contentHtml =
+    extractFirstElementByTagName(html, "article") ??
+    extractFirstElementByTagName(html, "main") ??
+    extractFirstElementByTagName(html, "body");
+
+  let contentMarkdown = contentHtml ? convertHtmlToMarkdown(contentHtml, parsedUrl) : "";
+  if (!contentMarkdown && shouldUseRawText(rawText, sourceUrl)) {
+    contentMarkdown = normalizeText(rawText);
+  }
+  if (!contentMarkdown) {
+    throw new ParserError("PARSE_CONTENT_EMPTY", "Failed to extract page body from source URL.", true);
+  }
+
+  const contentPlaintext = markdownToPlainText(contentMarkdown);
+  const metaSummary =
+    extractMetaContent(html, "property", "og:description") ??
+    extractMetaContent(html, "name", "description") ??
+    extractMetaContent(html, "name", "twitter:description") ??
+    null;
+  const summary = truncateText(normalizeText(metaSummary ?? contentPlaintext ?? title) || title, SUMMARY_MAX_LENGTH);
+
+  return {
+    title,
+    summary,
+    coverUrl,
+    contentPlaintext,
+    contentMarkdown,
+    contentHtml
+  };
+}
+
 export async function parseWeChatArticle(sourceUrl: string, rawText: string | null): Promise<ParsedArticle> {
   if (sourceUrl.includes("fail-parse")) {
     throw new ParserError("PARSE_FETCH_FAILED", "Failed to fetch article content from source URL.", true);
@@ -414,8 +589,25 @@ export async function parseWeChatArticle(sourceUrl: string, rawText: string | nu
   };
 }
 
+export async function parseArticle(sourceUrl: string, rawText: string | null): Promise<ParsedArticle> {
+  let parsedUrl: URL;
+  try {
+    parsedUrl = new URL(sourceUrl);
+  } catch {
+    throw new ParserError("PARSE_INVALID_URL", "Source URL is invalid.", false);
+  }
+
+  const classified = classifyParserByUrl(parsedUrl);
+  if (classified.parser === "wechat_mp") {
+    return parseWeChatArticle(sourceUrl, rawText);
+  }
+  return parseGenericWebArticle(sourceUrl, rawText);
+}
+
 export const __articleParserInternal = {
   convertHtmlToMarkdown,
   extractElementById,
-  markdownToPlainText
+  extractFirstElementByTagName,
+  markdownToPlainText,
+  classifyParserByUrl
 };

@@ -1,7 +1,7 @@
 import { createLogger, serializeError, type Logger } from "./logger";
 import { buildNotionChildrenBlocks } from "./notion-blocks";
 import type { Store } from "./store";
-import { ParserError, parseWeChatArticle, type ParsedArticle } from "./article-parser";
+import { ParserError, parseArticle, type ParsedArticle, classifyParserByUrl } from "./article-parser";
 import { buildNotionImageAppendBlocksFromHtml } from "./image-pipeline";
 import { nowIso, randomId } from "./utils";
 
@@ -378,7 +378,15 @@ export async function processItem(
 
   let parsedArticle: ParsedArticle;
   try {
-    parsedArticle = await parseWeChatArticle(item.normalized_url, item.raw_text);
+    const classified = classifyParserByUrl(new URL(item.normalized_url));
+    logger.info("pipeline.parse.classified", {
+      user_id: input.userId,
+      item_id: input.itemId,
+      parser: classified.parser,
+      hostname: classified.hostname,
+      primary_domain: classified.primaryDomain
+    });
+    parsedArticle = await parseArticle(item.normalized_url, item.raw_text);
     await store.patchItem({
       userId: input.userId,
       itemId: input.itemId,

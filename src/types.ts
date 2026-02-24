@@ -9,6 +9,9 @@ export const ITEM_STATUSES = [
 
 export type ItemStatus = (typeof ITEM_STATUSES)[number];
 
+export const SOURCE_TYPES = ["wechat_mp", "generic_web"] as const;
+export type SourceType = (typeof SOURCE_TYPES)[number];
+
 export const APP_USER_ROLES = ["SUPER_ADMIN", "USER"] as const;
 export type AppUserRole = (typeof APP_USER_ROLES)[number];
 
@@ -28,7 +31,7 @@ export interface ArticleItem {
   client_item_id: string;
   source_url: string;
   normalized_url: string;
-  source_type: "wechat_mp";
+  source_type: SourceType;
   raw_text: string | null;
   title: string | null;
   summary: string | null;
@@ -115,7 +118,7 @@ export interface IngestRequest {
   source_url: string;
   raw_text?: string;
   source_app?: string;
-  source_type?: "wechat_mp";
+  source_type?: SourceType;
   notion_api_token?: string;
   notion_api_version?: string;
   notion_api_base_url?: string;

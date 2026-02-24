@@ -60,6 +60,31 @@ describe("in-memory store", () => {
     expect(second.item.id).toBe(first.item.id);
   });
 
+  it("supports ingest for non-wechat urls (generic_web) and still deduplicates by normalized url", async () => {
+    const store = new InMemoryStore();
+    await store.ensureUser({ userId: "u-generic", role: "USER" });
+
+    const first = await store.ingestItem({
+      userId: "u-generic",
+      clientItemId: "item-1",
+      sourceUrl: "https://example.com/a/b?utm_source=timeline&x=1",
+      rawText: "content 1",
+      sourceType: "generic_web"
+    });
+    expect(first.duplicated).toBe(false);
+    expect(first.item.source_type).toBe("generic_web");
+
+    const second = await store.ingestItem({
+      userId: "u-generic",
+      clientItemId: "item-2",
+      sourceUrl: "https://example.com/a/b?x=1",
+      rawText: "content 2",
+      sourceType: "generic_web"
+    });
+    expect(second.duplicated).toBe(true);
+    expect(second.item.id).toBe(first.item.id);
+  });
+
   it("supports token lifecycle: issue, query by hash, touch and revoke", async () => {
     const store = new InMemoryStore();
     const issued = await store.issueAccessToken({

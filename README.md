@@ -85,7 +85,7 @@ https://your-worker.example.com/console
 - 创建用户 API Token（供客户端/测试工具调用）
 - 完成 Notion OAuth 授权（`/v1/auth/notion/start` + 浏览器回调，成功后会标记 `notion_connected=true`）
 - 设置目标页面
-- 在“同步测试工具”中提交公众号 URL + `notion_api_token` 验证链路
+- 在“同步测试工具”中提交 URL（公众号文章/通用网页） + `notion_api_token` 验证链路
 
 ## 功能范围（当前）
 
@@ -130,7 +130,7 @@ https://your-worker.example.com/console
 - 当前主线已接入 D1 持久化（通过 `DB` 绑定）。
 - 已支持 Queue 异步消费（配置 `PROCESS_ITEM_QUEUE` 绑定后启用）；未配置时会回退到 `waitUntil`。
 - 已支持真实 Notion 写入（创建 page + 追加 blocks），是否 mock 由 `NOTION_MOCK` 控制。
-- 公众号 URL 处理链路：抓取文章 HTML -> 提取正文 -> 转 Markdown -> 转 Notion Blocks -> 写入 Notion。
+- URL 处理链路：根据 URL 主域名选择解析器 -> 抓取 HTML -> 提取正文 -> 转 Markdown -> 转 Notion Blocks -> 写入 Notion。
 
 ## 在线 API 文档
 
@@ -182,7 +182,9 @@ npm run d1:migrate:remote
 - 本版本包含 `0006_rename_user_settings_target_columns.sql`，会将 `user_settings` 的
   `target_database_id/target_database_title` 重命名为
   `target_page_id/target_page_title`。
-- 若线上未执行到该迁移，可能出现列不存在错误；请先执行 `npm run d1:migrate:remote` 再部署新代码。
+- 本版本包含 `0007_expand_article_items_source_type.sql`，将 `article_items.source_type`
+  扩展为支持 `generic_web`（用于非公众号 URL 的解析与入库）。
+- 若线上未执行到上述迁移，可能出现 schema 不一致错误（如列不存在/约束失败）；请先执行 `npm run d1:migrate:remote` 再部署新代码。
 
 ## API 访问 Token 初始化
 
@@ -362,16 +364,19 @@ curl -X PUT "https://your-worker.example.com/v1/me/notion-target" \
   -H "Content-Type: application/json" \
   -d '{
     "page_id": "<NOTION_PARENT_PAGE_ID>",
-    "page_title": "公众号文章收集"
+    "page_title": "内容收集"
   }'
 ```
 
-### 公众号正文解析与格式转换（当前实现）
+### URL 正文解析与格式转换（当前实现）
 
-1. Worker 获取 `mp.weixin.qq.com` 页面 HTML。
-2. 从 `id="js_content"` 提取正文区域。
-3. 将正文 HTML 转为 Markdown（支持段落、标题、列表、引用、代码块）。
-4. 将 Markdown 转成 Notion Blocks 并写入页面。
+1. 解析器前置分类（按 URL hostname/主域名）：
+   - `mp.weixin.qq.com` / `*.weixin.qq.com` -> `wechat_mp`
+   - 其他 -> `generic_web`
+2. `wechat_mp`：获取页面 HTML，并从 `id="js_content"` 提取正文区域。
+3. `generic_web`：获取页面 HTML，优先提取 `<article>`，其次 `<main>`，最后 `<body>`。
+4. 将正文 HTML 转为 Markdown（支持段落、标题、列表、引用、代码块；Markdown 阶段忽略图片）。
+5. 将 Markdown 转成 Notion Blocks 并写入页面。
 
 说明：
 
@@ -478,7 +483,7 @@ npm test
 
 ### Web 手工测试工具（test 目录）
 
-如果你想在浏览器里手工输入公众号 URL 并直接触发同步，可使用：
+如果你想在浏览器里手工输入 URL 并直接触发同步，可使用：
 
 ```bash
 WEB_TOOL_API_TOKEN="<API_TOKEN>" \
@@ -496,7 +501,7 @@ http://127.0.0.1:4173
 
 - `/console` 已内置“同步测试工具”（提交 URL + 自动轮询），优先推荐在后台直接测试。
 - 该工具在 `test/web-tool` 下，是独立的本地页面与本地代理服务。
-- 页面输入“公众号 URL + notion_api_token”，本地服务会将两者一起提交到 `/v1/ingest` 并轮询到最终状态。
+- 页面输入“URL + notion_api_token”，本地服务会将两者一起提交到 `/v1/ingest` 并轮询到最终状态。
 - 默认端口为 `4173`，可通过 `WEB_TOOL_PORT` 覆盖。
 - 若未设置 `WEB_TOOL_API_BASE_URL`，默认使用 `https://your-worker.example.com`。
 - `WEB_TOOL_API_TOKEN` 就是普通的 `API_TOKEN`，可在 `/console` 的“我的 Token”中创建。
@@ -518,7 +523,7 @@ http://127.0.0.1:4173
   - 管理自己的 `/v1/me/tokens*`
   - 管理自己的 `/v1/me/notion-credentials` 与 `/v1/me/notion-target`
   - 通过 `/v1/me/notion-connectivity-test` 测试 Notion 凭证与目标页连通性
-  - 使用“同步测试工具”提交公众号 URL + `notion_api_token`，并轮询 `/v1/items/{itemId}` 查看最终状态
+  - 使用“同步测试工具”提交 URL + `notion_api_token`，并轮询 `/v1/items/{itemId}` 查看最终状态
 - 超管额外能力：
   - 管理 `/v1/admin/users*`（创建/查询/更新/删除用户）
   - 管理指定用户的 `/v1/admin/users/{userId}/tokens*`

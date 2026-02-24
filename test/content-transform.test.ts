@@ -1,9 +1,17 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { __articleParserInternal, parseWeChatArticle } from "../src/article-parser";
+import { __articleParserInternal, classifyParserByUrl, parseArticle, parseWeChatArticle } from "../src/article-parser";
 import { buildNotionChildrenBlocks, markdownToNotionBlocks } from "../src/notion-blocks";
 
 describe("article parser", () => {
+  it("classifies parser by primary domain/host", () => {
+    const wechat = classifyParserByUrl(new URL("https://mp.weixin.qq.com/s/demo"));
+    expect(wechat.parser).toBe("wechat_mp");
+
+    const generic = classifyParserByUrl(new URL("https://example.com/a/b"));
+    expect(generic.parser).toBe("generic_web");
+  });
+
   it("extracts js_content and converts html to markdown", () => {
     const html = `
       <html>
@@ -29,6 +37,40 @@ describe("article parser", () => {
     expect(markdown).toContain("第一段");
     expect(markdown).toContain("- 列表一");
     expect(markdown).not.toContain("![](https://img.example.com/pic.jpg)");
+  });
+
+  it("parses generic web page by extracting <article> first", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    fetchSpy.mockResolvedValueOnce(
+      new Response(
+        `
+        <html>
+          <head>
+            <title>测试页面标题</title>
+            <meta name="description" content="这是一段描述" />
+          </head>
+          <body>
+            <header>top nav</header>
+            <article>
+              <h2>正文标题</h2>
+              <p>第一段</p>
+              <ul><li>条目一</li></ul>
+            </article>
+            <footer>foot</footer>
+          </body>
+        </html>
+      `,
+        { status: 200, headers: { "content-type": "text/html; charset=utf-8" } }
+      )
+    );
+
+    const article = await parseArticle("https://example.com/demo", null);
+    expect(article.title).toContain("测试页面标题");
+    expect(article.summary).toContain("这是一段描述");
+    expect(article.contentMarkdown).toContain("## 正文标题");
+    expect(article.contentMarkdown).toContain("- 条目一");
+
+    fetchSpy.mockRestore();
   });
 
   it("uses provided raw_text as fallback without remote fetch", async () => {
