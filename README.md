@@ -395,6 +395,67 @@ curl -X PUT "https://your-worker.example.com/v1/me/notion-target" \
 - `NOTION_TARGET_NOT_FOUND`：目标页面不存在或未共享（404）。
 - `NOTION_RATE_LIMITED`：Notion 限流（429，可重试）。
 
+## 用户管理 API（管理员）
+
+管理员权限规则：
+- token `scopes` 包含 `*` 或 `admin:users` 即可管理用户。
+
+通用变量（建议先设置）：
+```bash
+API_BASE_URL="https://your-worker.example.com"
+ADMIN_TOKEN="<SUPER_ADMIN_TOKEN>"
+```
+
+示例：新增用户
+```bash
+curl -X POST "$API_BASE_URL/v1/admin/users" \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "user_id": "feng",
+    "display_name": "Feng",
+    "role": "USER"
+  }'
+```
+
+示例：查询用户列表
+```bash
+curl "$API_BASE_URL/v1/admin/users" \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
+```
+
+示例：按状态筛选用户
+```bash
+curl "$API_BASE_URL/v1/admin/users?status=ACTIVE" \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
+```
+
+示例：查询指定用户的 token
+```bash
+curl "$API_BASE_URL/v1/admin/users/feng/tokens?active=true" \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
+```
+
+简易脚本：仅输出明文 token（适合命令行复制）
+```bash
+ADMIN_TOKEN="<SUPER_ADMIN_TOKEN>" \
+API_BASE_URL="https://your-worker.example.com" \
+node scripts/issue-user-token.mjs feng
+```
+
+同一脚本的 npm 方式：
+```bash
+ADMIN_TOKEN="<SUPER_ADMIN_TOKEN>" \
+API_BASE_URL="https://your-worker.example.com" \
+npm run admin:issue-user-token -- feng
+```
+
+示例：删除用户（逻辑删除）
+```bash
+curl -X DELETE "$API_BASE_URL/v1/admin/users/feng" \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
+```
+
 ## Token 管理 API（管理员）
 
 管理员权限规则：

@@ -1137,7 +1137,13 @@ function buildConsoleHtml(): string {
         <section class="view-section" id="section-sync">
           <div class="card">
             <h2>同步测试工具</h2>
-            <div class="status">输入公众号 URL + notion_api_token，调用 /v1/ingest 并在页面内轮询最终状态。</div>
+            <div class="status">输入 URL + notion_api_token，调用 /v1/ingest 并在页面内轮询最终状态。</div>
+            <div class="row">
+              <input id="syncTargetPageIdInput" placeholder="Notion page_id（可选）" style="flex:1; min-width:220px;" />
+              <input id="syncTargetPageTitleInput" placeholder="page_title（可选）" style="flex:1; min-width:180px;" />
+              <button id="syncSaveTargetBtn" class="primary">保存目标页</button>
+            </div>
+            <pre id="syncTargetResult">暂无结果</pre>
             <div class="row">
               <input
                 id="ingestSourceUrlInput"
@@ -1269,6 +1275,7 @@ function buildConsoleHtml(): string {
       const adminUsersResultEl = document.getElementById("adminUsersResult");
       const adminUserTokensResultEl = document.getElementById("adminUserTokensResult");
       const auditLogsResultEl = document.getElementById("auditLogsResult");
+      const syncTargetResultEl = document.getElementById("syncTargetResult");
       const ingestTestStatusEl = document.getElementById("ingestTestStatus");
       const ingestTestResultEl = document.getElementById("ingestTestResult");
       const menuButtons = Array.from(document.querySelectorAll(".menu-btn"));
@@ -1692,7 +1699,7 @@ function buildConsoleHtml(): string {
         const timeoutSec = parsePositiveInt((document.getElementById("ingestPollTimeoutInput").value || "").trim(), 60);
 
         if (!sourceUrl) {
-          setIngestStatus("请先输入公众号 URL");
+          setIngestStatus("请先输入 URL");
           return;
         }
         if (!notionApiToken) {
@@ -1832,6 +1839,25 @@ function buildConsoleHtml(): string {
           notionResultEl.textContent = pretty({ status: resp.status, body });
         } catch (error) {
           notionResultEl.textContent = String(error);
+        }
+      });
+
+      document.getElementById("syncSaveTargetBtn").addEventListener("click", async () => {
+        const pageId = (document.getElementById("syncTargetPageIdInput").value || "").trim();
+        const pageTitle = (document.getElementById("syncTargetPageTitleInput").value || "").trim();
+        if (!pageId) {
+          syncTargetResultEl.textContent = "请先输入 page_id";
+          return;
+        }
+        try {
+          const { resp, body } = await api("/v1/me/notion-target", {
+            method: "PUT",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ page_id: pageId, page_title: pageTitle || null })
+          });
+          syncTargetResultEl.textContent = pretty({ status: resp.status, body });
+        } catch (error) {
+          syncTargetResultEl.textContent = String(error);
         }
       });
 

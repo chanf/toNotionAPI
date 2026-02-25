@@ -15,6 +15,7 @@
     "d1:migrate:local": "wrangler d1 migrations apply wx2notion-db --local",
     "d1:migrate:remote": "wrangler d1 migrations apply wx2notion-db --remote",
     "token:hash": "node scripts/hash-token.mjs",
+    "admin:issue-user-token": "node scripts/issue-user-token.mjs",
     "ingest:online": "node scripts/test-online-ingest.mjs"
   },
   "devDependencies": {
